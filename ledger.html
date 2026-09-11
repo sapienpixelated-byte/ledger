@@ -1,0 +1,1797 @@
+<!DOCTYPE html>
+<!--
+  ============================================================================
+  LEDGER — a daily time-budget & to-do app
+  ============================================================================
+
+  WHAT THIS FILE IS
+  A single, self-contained web app (HTML + Tailwind CDN + vanilla JS).
+  No build step. Open it in a browser, or host it anywhere static
+  (GitHub Pages, Netlify, Vercel, Cloudflare Pages...).
+
+  It works with ZERO setup, storing tasks in this browser's local storage.
+  To sync the same tasks between your phone and your PC, connect it to a
+  free Supabase project by following the steps below — takes ~5 minutes.
+
+  ----------------------------------------------------------------------------
+  STEP-BY-STEP: ENABLE CLOUD SYNC WITH SUPABASE (FREE TIER)
+  ----------------------------------------------------------------------------
+
+  1) CREATE A FREE SUPABASE PROJECT
+     - Go to https://supabase.com → "Start your project" → sign in with
+       GitHub/Google.
+     - Click "New project". Pick any name (e.g. "ledger"), set a database
+       password (save it somewhere), pick the region closest to you, and
+       click "Create new project". Wait ~1-2 minutes for it to spin up.
+
+  2) CREATE THE `tasks` TABLE + SECURITY RULES
+     - In the left sidebar, open the "SQL Editor" → "New query".
+     - Paste the SQL below and click "Run".
+
+       create table public.tasks (
+         id uuid primary key default gen_random_uuid(),
+         user_id uuid not null references auth.users(id) on delete cascade,
+         profile text not null check (profile in ('student','gamer','designer')),
+         title text not null,
+         scheduled_date date not null,
+         deadline timestamptz,
+         estimated_minutes integer not null check (estimated_minutes > 0),
+         actual_minutes integer,
+         completed boolean not null default false,
+         is_daily boolean not null default false,
+         rollover_reviewed boolean not null default false,
+         created_at timestamptz not null default now()
+       );
+
+       alter table public.tasks enable row level security;
+
+       create policy "Individuals can manage their own tasks"
+       on public.tasks
+       for all
+       using (auth.uid() = user_id)
+       with check (auth.uid() = user_id);
+
+     This creates the table and locks it down so each signed-in person can
+     only ever see and edit their own rows — that's what makes it safe to
+     use the public "anon" key in this front-end file.
+
+     Already created this table before the "Daily task" feature existed?
+     Just run this too — it adds the two missing columns without touching
+     your existing rows:
+
+       alter table public.tasks add column if not exists is_daily boolean not null default false;
+       alter table public.tasks add column if not exists rollover_reviewed boolean not null default false;
+
+  2b) CREATE THE DIET TABLES + SECURITY RULES
+     - Same SQL Editor, new query, run this too (it adds two more tables:
+       one row per person for their physical details & calculated targets,
+       and one row per food logged).
+
+       create table public.diet_profiles (
+         user_id uuid primary key references auth.users(id) on delete cascade,
+         sex text not null check (sex in ('male','female')),
+         age integer not null check (age > 0),
+         height_cm numeric not null check (height_cm > 0),
+         weight_kg numeric not null check (weight_kg > 0),
+         activity_level text not null check (activity_level in ('sedentary','light','moderate','active','very_active')),
+         goal text not null check (goal in ('lose','maintain','gain')),
+         target_calories integer not null,
+         target_protein_g integer not null,
+         target_carbs_g integer not null,
+         target_fat_g integer not null,
+         updated_at timestamptz not null default now()
+       );
+
+       alter table public.diet_profiles enable row level security;
+
+       create policy "Individuals can manage their own diet profile"
+       on public.diet_profiles
+       for all
+       using (auth.uid() = user_id)
+       with check (auth.uid() = user_id);
+
+       create table public.food_logs (
+         id uuid primary key default gen_random_uuid(),
+         user_id uuid not null references auth.users(id) on delete cascade,
+         log_date date not null,
+         meal text not null check (meal in ('breakfast','lunch','dinner','snack')),
+         food_name text not null,
+         calories integer not null check (calories >= 0),
+         protein_g numeric not null default 0,
+         carbs_g numeric not null default 0,
+         fat_g numeric not null default 0,
+         created_at timestamptz not null default now()
+       );
+
+       alter table public.food_logs enable row level security;
+
+       create policy "Individuals can manage their own food logs"
+       on public.food_logs
+       for all
+       using (auth.uid() = user_id)
+       with check (auth.uid() = user_id);
+
+  3) GET YOUR PROJECT URL AND ANON KEY
+     - In the sidebar: "Project Settings" (gear icon) → "API".
+     - Copy the "Project URL" (looks like https://xxxxxxxx.supabase.co).
+     - Copy the "anon" "public" key (a long string starting with "eyJ...").
+
+  4) PASTE THEM INTO THIS APP
+     You have two options — pick whichever is easier:
+
+     OPTION A — paste into the code (best if you edit this file before
+     hosting it):
+       Find the CONFIG block near the top of the <script> at the bottom of
+       this file and set:
+         const SUPABASE_URL = "https://xxxxxxxx.supabase.co";
+         const SUPABASE_ANON_KEY = "eyJ...your anon key...";
+
+     OPTION B — paste into the app itself (best on mobile, or if you don't
+     want to touch the code):
+       Open the app, tap the gear icon (⚙) in the top bar → "Cloud Sync
+       Setup" → paste the Project URL and anon key → Save & Reconnect.
+       This is stored in that browser's local storage, so do it once on
+       your PC and once on your phone (same values both times).
+
+  5) HOST IT SOMEWHERE BOTH DEVICES CAN REACH
+     Magic-link sign-in needs a real URL to send you back to (not a
+     file:// path), and you need the SAME URL on your phone and PC anyway.
+     The free, zero-config option: GitHub Pages.
+       - Create a public GitHub repo, add this file as `index.html`.
+       - Repo → Settings → Pages → Deploy from branch → main / (root).
+       - You'll get a URL like https://yourname.github.io/ledger/ — open
+         that on both your PC and your phone.
+
+  6) (Recommended) ALLOW THE REDIRECT IN SUPABASE
+     - In Supabase: "Authentication" → "URL Configuration".
+     - Set "Site URL" to your hosted URL from step 5, and add it under
+       "Redirect URLs" too.
+
+  7) SIGN IN
+     - Open the hosted app on your PC, enter your email, tap "Send magic
+       link", open the email, click the link — you're in.
+     - Open the same hosted URL on your phone, sign in with the SAME
+       email. Both devices now read/write the same `tasks` table and stay
+       in sync automatically (the app refetches after every change and
+       periodically in the background).
+
+  That's it — no server code, no API keys other than the public anon key,
+  which is safe to expose because of the row-level security policy above.
+  ============================================================================
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Ledger — daily time budget</title>
+<link rel="icon" href="data:," />
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          paper: '#EDF1EE',
+          card: '#FBFCFA',
+          ink: '#16211C',
+          inksoft: '#55655C',
+          line: '#CDD6CE',
+          gold: '#D8A63D',
+          golddeep: '#B9852A',
+          student: '#3D6FE0',
+          gamer: '#C24CB0',
+          designer: '#1B9C87',
+          danger: '#C64536',
+        },
+        fontFamily: {
+          display: ['"Fraunces"', 'serif'],
+          body: ['"Inter"', 'sans-serif'],
+          mono: ['"IBM Plex Mono"', 'monospace'],
+        },
+      },
+    },
+  };
+</script>
+
+<style>
+  html { -webkit-tap-highlight-color: transparent; }
+  body { background-color: #EDF1EE; }
+  ::selection { background: #D8A63D; color: #16211C; }
+
+  .tabular { font-variant-numeric: tabular-nums; }
+
+  /* hairline ruled rows, like a ledger book */
+  .ruled > * + * { border-top: 1px solid #CDD6CE; }
+
+  /* thin scrollbars for the date strip */
+  .scroll-thin::-webkit-scrollbar { height: 6px; width: 6px; }
+  .scroll-thin::-webkit-scrollbar-thumb { background: #CDD6CE; border-radius: 4px; }
+  .scroll-thin::-webkit-scrollbar-track { background: transparent; }
+
+  :focus-visible { outline: 2px solid #D8A63D; outline-offset: 2px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  }
+
+  .dial-ring circle, .dial-ring path { transition: stroke-dashoffset 500ms ease, stroke 300ms ease; }
+
+  .modal-backdrop { background: rgba(22, 33, 28, 0.45); backdrop-filter: blur(2px); }
+
+  .chip-active { box-shadow: inset 0 0 0 2px currentColor; }
+
+  input[type="date"]::-webkit-calendar-picker-indicator,
+  input[type="datetime-local"]::-webkit-calendar-picker-indicator { opacity: 0.6; }
+</style>
+</head>
+
+<body class="font-body text-ink antialiased min-h-screen pb-24 md:pb-8">
+
+  <!-- ===================== LOADING ===================== -->
+  <div id="loadingScreen" class="min-h-screen flex flex-col items-center justify-center gap-3">
+    <div class="font-display text-2xl tracking-tight">Ledger</div>
+    <div class="text-sm text-inksoft">Opening today's page…</div>
+  </div>
+
+  <!-- ===================== AUTH SCREEN ===================== -->
+  <div id="authScreen" class="hidden min-h-screen flex-col items-center justify-center px-6">
+    <div class="w-full max-w-sm">
+      <div class="mb-8 text-center">
+        <div class="font-display text-3xl tracking-tight">Ledger</div>
+        <p class="mt-2 text-sm text-inksoft">Sign in to keep your schedule in sync across every device.</p>
+      </div>
+
+      <div id="authFormWrap" class="bg-card border border-line rounded-2xl p-6">
+        <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-2">Email</label>
+        <input id="authEmail" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com"
+          class="w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm focus:border-gold" />
+        <button id="authSendBtn" class="mt-4 w-full rounded-lg bg-ink text-paper py-2.5 text-sm font-medium hover:bg-ink/90 transition">
+          Send magic link
+        </button>
+        <p id="authStatus" class="mt-3 text-xs text-inksoft leading-relaxed"></p>
+      </div>
+
+      <button id="useLocalBtn" class="mt-4 w-full text-center text-xs text-inksoft underline decoration-line hover:text-ink">
+        Skip — use this device only (no sync)
+      </button>
+    </div>
+  </div>
+
+  <!-- ===================== APP ===================== -->
+  <div id="app" class="hidden">
+
+    <!-- Local-only banner -->
+    <div id="localBanner" class="hidden bg-gold/20 border-b border-gold/40 text-xs text-golddeep px-4 py-2 text-center">
+      Running locally on this device only — tasks won't sync to your phone or PC.
+      <button id="openSetupFromBanner" class="underline font-medium">Set up cloud sync</button>
+    </div>
+
+    <!-- Top bar -->
+    <header class="sticky top-0 z-30 bg-paper/90 backdrop-blur border-b border-line">
+      <div class="max-w-5xl mx-auto px-4 py-3 flex items-center gap-3">
+        <div class="font-display text-xl tracking-tight shrink-0">Ledger</div>
+
+        <!-- Schedule / Diet switcher -->
+        <div id="viewTabs" class="shrink-0 flex items-center gap-1 bg-white/70 border border-line rounded-full p-1">
+          <!-- injected -->
+        </div>
+
+        <!-- Profile switcher (schedule view only) -->
+        <div id="profileTabs" class="flex-1 flex items-center gap-1 bg-white/70 border border-line rounded-full p-1 overflow-x-auto scroll-thin">
+          <!-- injected -->
+        </div>
+
+        <button id="settingsBtn" title="Settings" class="shrink-0 w-9 h-9 rounded-full border border-line bg-white flex items-center justify-center hover:border-ink transition">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        </button>
+
+        <button id="addTaskBtn" class="shrink-0 rounded-full bg-ink text-paper text-sm font-medium px-4 py-2 hover:bg-ink/90 transition">
+          + Task
+        </button>
+        <button id="addFoodBtn" class="hidden shrink-0 rounded-full bg-ink text-paper text-sm font-medium px-4 py-2 hover:bg-ink/90 transition">
+          + Food
+        </button>
+      </div>
+
+      <!-- Date strip -->
+      <div class="max-w-5xl mx-auto px-4 pb-3 flex items-center gap-2">
+        <button id="weekPrevBtn" class="shrink-0 w-7 h-7 rounded-full border border-line bg-white flex items-center justify-center hover:border-ink">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M15 18l-6-6 6-6"/></svg>
+        </button>
+        <div id="dateStrip" class="flex-1 flex items-center gap-1.5 overflow-x-auto scroll-thin"></div>
+        <button id="weekNextBtn" class="shrink-0 w-7 h-7 rounded-full border border-line bg-white flex items-center justify-center hover:border-ink">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M9 18l6-6-6-6"/></svg>
+        </button>
+        <button id="todayBtn" class="shrink-0 text-xs font-medium text-inksoft border border-line rounded-full px-3 py-1.5 bg-white hover:border-ink">Today</button>
+      </div>
+    </header>
+
+    <!-- Main -->
+    <main id="scheduleView" class="max-w-5xl mx-auto px-4 py-6 grid grid-cols-1 md:grid-cols-[280px_1fr] gap-6">
+
+      <!-- Dial / budget card -->
+      <section class="bg-card border border-line rounded-2xl p-5 h-fit">
+        <div class="flex items-center justify-between mb-1">
+          <div class="text-xs uppercase tracking-wide text-inksoft font-medium">Day's ledger</div>
+          <div id="dialDateLabel" class="text-xs text-inksoft tabular"></div>
+        </div>
+
+        <div class="flex justify-center py-2">
+          <svg id="dialSvg" viewBox="0 0 220 220" class="w-48 h-48 dial-ring"></svg>
+        </div>
+
+        <div class="text-center -mt-2 mb-4">
+          <div id="dialRemainingText" class="font-display text-3xl tabular"></div>
+          <div class="text-xs text-inksoft">of 16h budget</div>
+        </div>
+
+        <div id="dialLegend" class="space-y-1.5"></div>
+      </section>
+
+      <!-- Tasks -->
+      <section>
+        <!-- Filters -->
+        <div class="flex flex-wrap items-center gap-2 mb-4">
+          <div id="periodTabs" class="inline-flex bg-white/70 border border-line rounded-full p-1 text-xs"></div>
+        </div>
+
+        <div id="taskListWrap" class="bg-card border border-line rounded-2xl overflow-hidden">
+          <div id="taskList" class="ruled"></div>
+          <div id="emptyState" class="hidden px-6 py-14 text-center">
+            <div class="font-display text-lg mb-1">Nothing on the page</div>
+            <p class="text-sm text-inksoft mb-4">Add a task and it'll take its place in today's ledger.</p>
+            <button data-open-add class="rounded-full bg-ink text-paper text-sm font-medium px-4 py-2 hover:bg-ink/90">+ Add a task</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Diet -->
+    <main id="dietView" class="hidden max-w-5xl mx-auto px-4 py-6 grid grid-cols-1 md:grid-cols-[280px_1fr] gap-6">
+
+      <!-- Calorie ring card -->
+      <section class="bg-card border border-line rounded-2xl p-5 h-fit">
+        <div class="flex items-center justify-between mb-1">
+          <div class="text-xs uppercase tracking-wide text-inksoft font-medium">Day's plate</div>
+          <div id="calDateLabel" class="text-xs text-inksoft tabular"></div>
+        </div>
+
+        <div class="flex justify-center py-2">
+          <svg id="calSvg" viewBox="0 0 220 220" class="w-48 h-48 dial-ring"></svg>
+        </div>
+
+        <div class="text-center -mt-2 mb-4">
+          <div id="calRemainingText" class="font-display text-3xl tabular"></div>
+          <div id="calTargetCaption" class="text-xs text-inksoft"></div>
+        </div>
+
+        <div id="macroBars" class="space-y-3"></div>
+
+        <button id="editDietProfileBtn" class="mt-4 w-full text-center text-xs text-inksoft underline decoration-line hover:text-ink">
+          Edit physical details
+        </button>
+      </section>
+
+      <!-- Food log -->
+      <section>
+        <div class="mb-3">
+          <div class="text-xs uppercase tracking-wide text-inksoft font-medium mb-2">Quick add</div>
+          <div id="quickAddChips" class="flex flex-wrap gap-2"></div>
+        </div>
+
+        <div id="foodListWrap" class="bg-card border border-line rounded-2xl overflow-hidden mt-4">
+          <div id="foodList"></div>
+          <div id="foodEmptyState" class="hidden px-6 py-14 text-center">
+            <div class="font-display text-lg mb-1">Nothing logged yet</div>
+            <p class="text-sm text-inksoft mb-4">Log a meal and it'll take its place on today's plate.</p>
+            <button data-open-food class="rounded-full bg-ink text-paper text-sm font-medium px-4 py-2 hover:bg-ink/90">+ Log food</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ===================== ADD / EDIT TASK MODAL ===================== -->
+  <div id="taskModal" class="hidden fixed inset-0 z-40 modal-backdrop flex items-end md:items-center justify-center p-0 md:p-4">
+    <div class="bg-card w-full md:max-w-md rounded-t-2xl md:rounded-2xl border border-line max-h-[92vh] overflow-y-auto">
+      <div class="px-5 pt-5 pb-2 flex items-center justify-between">
+        <h2 id="taskModalTitle" class="font-display text-xl">New task</h2>
+        <button data-close-modal class="w-8 h-8 rounded-full hover:bg-black/5 flex items-center justify-center">✕</button>
+      </div>
+      <form id="taskForm" class="px-5 pb-5 space-y-4">
+        <div>
+          <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Title</label>
+          <input id="fTitle" required maxlength="120" placeholder="e.g. Draft chapter outline"
+            class="w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm focus:border-gold" />
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Profile</label>
+          <div id="fProfileChips" class="flex gap-2"></div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Scheduled date</label>
+            <input id="fScheduledDate" type="date" required class="w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm focus:border-gold" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Deadline <span class="text-inksoft/60 normal-case">(optional)</span></label>
+            <input id="fDeadline" type="datetime-local" class="w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm focus:border-gold" />
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Estimated duration</label>
+          <div class="flex items-center gap-2">
+            <input id="fEstHours" type="number" min="0" max="16" value="1" class="w-20 rounded-lg border border-line bg-white px-3 py-2.5 text-sm focus:border-gold" />
+            <span class="text-sm text-inksoft">h</span>
+            <input id="fEstMinutes" type="number" min="0" max="59" step="5" value="0" class="w-20 rounded-lg border border-line bg-white px-3 py-2.5 text-sm focus:border-gold" />
+            <span class="text-sm text-inksoft">m</span>
+          </div>
+          <p id="fEstWarning" class="hidden mt-1.5 text-xs text-danger"></p>
+        </div>
+
+        <div class="flex items-center justify-between gap-3 rounded-lg border border-line px-3 py-2.5">
+          <div class="min-w-0">
+            <div class="text-sm font-medium">Repeat daily</div>
+            <div class="text-xs text-inksoft leading-relaxed">If it's left unfinished, you'll be asked whether to carry it into tomorrow. No-deadline tasks only.</div>
+          </div>
+          <button type="button" id="fDailyToggle" class="shrink-0 w-11 h-6 rounded-full relative transition" style="background:#CDD6CE">
+            <span id="fDailyDot" class="absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform"></span>
+          </button>
+        </div>
+
+        <div class="flex items-center gap-2 pt-1">
+          <button type="submit" class="flex-1 rounded-lg bg-ink text-paper py-2.5 text-sm font-medium hover:bg-ink/90 transition">Save task</button>
+          <button type="button" id="deleteTaskBtn" class="hidden rounded-lg border border-danger text-danger py-2.5 px-4 text-sm font-medium hover:bg-danger/5">Delete</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ===================== COMPLETE TASK MODAL ===================== -->
+  <div id="completeModal" class="hidden fixed inset-0 z-40 modal-backdrop flex items-end md:items-center justify-center p-0 md:p-4">
+    <div class="bg-card w-full md:max-w-sm rounded-t-2xl md:rounded-2xl border border-line">
+      <div class="px-5 pt-5 pb-2 flex items-center justify-between">
+        <h2 class="font-display text-xl">Log actual time</h2>
+        <button data-close-modal class="w-8 h-8 rounded-full hover:bg-black/5 flex items-center justify-center">✕</button>
+      </div>
+      <div class="px-5 pb-5">
+        <p id="completeTaskTitle" class="text-sm text-inksoft mb-4"></p>
+        <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Time actually spent</label>
+        <div class="flex items-center gap-2 mb-1">
+          <input id="cActHours" type="number" min="0" max="24" value="0" class="w-20 rounded-lg border border-line bg-white px-3 py-2.5 text-sm focus:border-gold" />
+          <span class="text-sm text-inksoft">h</span>
+          <input id="cActMinutes" type="number" min="0" max="59" step="5" value="0" class="w-20 rounded-lg border border-line bg-white px-3 py-2.5 text-sm focus:border-gold" />
+          <span class="text-sm text-inksoft">m</span>
+        </div>
+        <p id="completeDelta" class="text-xs text-inksoft mb-4 tabular"></p>
+        <button id="confirmCompleteBtn" class="w-full rounded-lg bg-ink text-paper py-2.5 text-sm font-medium hover:bg-ink/90 transition">Mark complete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== DIET PROFILE MODAL ===================== -->
+  <div id="dietProfileModal" class="hidden fixed inset-0 z-40 modal-backdrop flex items-end md:items-center justify-center p-0 md:p-4">
+    <div class="bg-card w-full md:max-w-md rounded-t-2xl md:rounded-2xl border border-line max-h-[92vh] overflow-y-auto">
+      <div class="px-5 pt-5 pb-2 flex items-center justify-between">
+        <h2 class="font-display text-xl">Your physical details</h2>
+        <button data-close-modal class="w-8 h-8 rounded-full hover:bg-black/5 flex items-center justify-center">✕</button>
+      </div>
+      <form id="dietProfileForm" class="px-5 pb-5 space-y-4">
+        <p class="text-xs text-inksoft leading-relaxed">Used only to estimate a sensible calorie and macro target for you — a general guide, not medical advice.</p>
+
+        <div>
+          <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Sex</label>
+          <div id="dpSexChips" class="flex gap-2"></div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Age</label>
+            <input id="dpAge" type="number" min="10" max="100" required class="w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm focus:border-gold" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Height (cm)</label>
+            <input id="dpHeight" type="number" min="100" max="250" required class="w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm focus:border-gold" />
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Weight (kg)</label>
+          <input id="dpWeight" type="number" min="30" max="300" step="0.1" required class="w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm focus:border-gold" />
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Activity level</label>
+          <select id="dpActivity" class="w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm focus:border-gold">
+            <option value="sedentary">Sedentary — little or no exercise</option>
+            <option value="light">Light — exercise 1-3 days/week</option>
+            <option value="moderate">Moderate — exercise 3-5 days/week</option>
+            <option value="active">Active — exercise 6-7 days/week</option>
+            <option value="very_active">Very active — hard training or physical job</option>
+          </select>
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Goal</label>
+          <div id="dpGoalChips" class="flex gap-2"></div>
+        </div>
+
+        <button type="submit" class="w-full rounded-lg bg-ink text-paper py-2.5 text-sm font-medium hover:bg-ink/90 transition">Calculate my targets</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ===================== LOG FOOD MODAL ===================== -->
+  <div id="foodModal" class="hidden fixed inset-0 z-40 modal-backdrop flex items-end md:items-center justify-center p-0 md:p-4">
+    <div class="bg-card w-full md:max-w-md rounded-t-2xl md:rounded-2xl border border-line max-h-[92vh] overflow-y-auto">
+      <div class="px-5 pt-5 pb-2 flex items-center justify-between">
+        <h2 class="font-display text-xl">Log food</h2>
+        <button data-close-modal class="w-8 h-8 rounded-full hover:bg-black/5 flex items-center justify-center">✕</button>
+      </div>
+      <form id="foodForm" class="px-5 pb-5 space-y-4">
+        <div>
+          <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Food</label>
+          <input id="ffName" required maxlength="80" placeholder="e.g. Dal, roti, banana…" class="w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm focus:border-gold" />
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Meal</label>
+          <div id="ffMealChips" class="grid grid-cols-4 gap-2"></div>
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Servings</label>
+          <input id="ffServings" type="number" min="0.25" step="0.25" value="1" class="w-24 rounded-lg border border-line bg-white px-3 py-2.5 text-sm focus:border-gold" />
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Calories</label>
+            <input id="ffCalories" type="number" min="0" required class="w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm focus:border-gold" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Protein (g)</label>
+            <input id="ffProtein" type="number" min="0" step="0.1" value="0" class="w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm focus:border-gold" />
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Carbs (g)</label>
+            <input id="ffCarbs" type="number" min="0" step="0.1" value="0" class="w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm focus:border-gold" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Fat (g)</label>
+            <input id="ffFat" type="number" min="0" step="0.1" value="0" class="w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm focus:border-gold" />
+          </div>
+        </div>
+
+        <button type="submit" class="w-full rounded-lg bg-ink text-paper py-2.5 text-sm font-medium hover:bg-ink/90 transition">Add to log</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ===================== DAILY ROLLOVER MODAL ===================== -->
+  <div id="rolloverModal" class="hidden fixed inset-0 z-40 modal-backdrop flex items-end md:items-center justify-center p-0 md:p-4">
+    <div class="bg-card w-full md:max-w-md rounded-t-2xl md:rounded-2xl border border-line max-h-[92vh] overflow-y-auto">
+      <div class="px-5 pt-5 pb-2 flex items-center justify-between">
+        <h2 class="font-display text-xl">Unfinished daily tasks</h2>
+        <button data-close-modal class="w-8 h-8 rounded-full hover:bg-black/5 flex items-center justify-center">✕</button>
+      </div>
+      <div class="px-5 pb-5">
+        <p class="text-sm text-inksoft mb-4">These didn't get finished — carry them into today?</p>
+        <div id="rolloverList" class="space-y-2"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== SETTINGS MODAL ===================== -->
+  <div id="settingsModal" class="hidden fixed inset-0 z-40 modal-backdrop flex items-end md:items-center justify-center p-0 md:p-4">
+    <div class="bg-card w-full md:max-w-md rounded-t-2xl md:rounded-2xl border border-line max-h-[92vh] overflow-y-auto">
+      <div class="px-5 pt-5 pb-2 flex items-center justify-between">
+        <h2 class="font-display text-xl">Cloud sync setup</h2>
+        <button data-close-modal class="w-8 h-8 rounded-full hover:bg-black/5 flex items-center justify-center">✕</button>
+      </div>
+      <div class="px-5 pb-5 space-y-4">
+        <p class="text-xs text-inksoft leading-relaxed">Paste your Supabase project's URL and public anon key (see the setup steps in the file's header comment). Do this once per device — same values on your phone and PC.</p>
+        <div>
+          <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Project URL</label>
+          <input id="setUrl" placeholder="https://xxxxxxxx.supabase.co" class="w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm focus:border-gold" />
+        </div>
+        <div>
+          <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Anon public key</label>
+          <input id="setKey" placeholder="eyJ..." class="w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm focus:border-gold" />
+        </div>
+        <button id="saveSettingsBtn" class="w-full rounded-lg bg-ink text-paper py-2.5 text-sm font-medium hover:bg-ink/90 transition">Save & reconnect</button>
+        <div class="flex items-center justify-between pt-2 border-t border-line">
+          <span class="text-xs text-inksoft" id="syncStatusLabel">—</span>
+          <button id="signOutBtn" class="hidden text-xs text-danger underline">Sign out</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="hidden fixed bottom-5 left-1/2 -translate-x-1/2 z-50 bg-ink text-paper text-sm px-4 py-2.5 rounded-full shadow-lg"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ------------------------------------------------------------------ */
+  /* CONFIG — Option A: paste your Supabase project's URL + anon key    */
+  /* here. Leave as-is to use Option B (Settings ⚙ inside the app) or   */
+  /* to run in local-only mode.                                        */
+  /* ------------------------------------------------------------------ */
+  const DEFAULT_SUPABASE_URL = "YOUR_SUPABASE_URL";
+  const DEFAULT_SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY";
+
+  const DAY_MINUTES = 16 * 60;
+  const PROFILES = [
+    { id: "student", label: "Student", color: "#3D6FE0" },
+    { id: "gamer", label: "Gamer", color: "#C24CB0" },
+    { id: "designer", label: "Designer", color: "#1B9C87" },
+  ];
+  const profileById = Object.fromEntries(PROFILES.map((p) => [p.id, p]));
+
+  const SEX_OPTIONS = [
+    { id: "male", label: "Male", color: "#3D6FE0" },
+    { id: "female", label: "Female", color: "#C24CB0" },
+  ];
+  const GOAL_OPTIONS = [
+    { id: "lose", label: "Lose", color: "#C64536" },
+    { id: "maintain", label: "Maintain", color: "#1B9C87" },
+    { id: "gain", label: "Gain", color: "#D8A63D" },
+  ];
+  const MEAL_OPTIONS = [
+    { id: "breakfast", label: "Breakfast" },
+    { id: "lunch", label: "Lunch" },
+    { id: "dinner", label: "Dinner" },
+    { id: "snack", label: "Snack" },
+  ];
+  const MACRO_META = [
+    { id: "protein", label: "Protein", color: "#2E7D5B" },
+    { id: "carbs", label: "Carbs", color: "#D8A63D" },
+    { id: "fat", label: "Fat", color: "#8B5CF6" },
+  ];
+  const ACTIVITY_MULTIPLIERS = { sedentary: 1.2, light: 1.375, moderate: 1.55, active: 1.725, very_active: 1.9 };
+
+  // Rough per-serving values for quick logging — editable before saving.
+  const COMMON_FOODS = [
+    { name: "Roti, whole wheat (1)", calories: 120, protein: 3, carbs: 22, fat: 3.7 },
+    { name: "Steamed rice (1 cup)", calories: 205, protein: 4.3, carbs: 45, fat: 0.4 },
+    { name: "Dal, cooked (1 cup)", calories: 230, protein: 18, carbs: 40, fat: 0.8 },
+    { name: "Paneer (100g)", calories: 265, protein: 18, carbs: 3.6, fat: 21 },
+    { name: "Curd / yogurt (1 cup)", calories: 150, protein: 8.5, carbs: 11, fat: 8 },
+    { name: "Boiled egg (1)", calories: 78, protein: 6.3, carbs: 0.6, fat: 5.3 },
+    { name: "Chicken breast, cooked (100g)", calories: 165, protein: 31, carbs: 0, fat: 3.6 },
+    { name: "Banana (1 medium)", calories: 105, protein: 1.3, carbs: 27, fat: 0.4 },
+    { name: "Apple (1 medium)", calories: 95, protein: 0.5, carbs: 25, fat: 0.3 },
+    { name: "Milk, whole (1 cup)", calories: 150, protein: 8, carbs: 12, fat: 8 },
+    { name: "Almonds (10)", calories: 70, protein: 2.6, carbs: 2.5, fat: 6 },
+    { name: "Peanut butter (1 tbsp)", calories: 95, protein: 3.6, carbs: 3.2, fat: 8.2 },
+    { name: "Oats, cooked (1 cup)", calories: 150, protein: 5, carbs: 27, fat: 2.5 },
+    { name: "Chapati + sabzi (1 plate)", calories: 350, protein: 9, carbs: 55, fat: 10 },
+    { name: "Idli (2 pieces)", calories: 130, protein: 4, carbs: 26, fat: 0.6 },
+    { name: "Poha (1 plate)", calories: 250, protein: 5, carbs: 42, fat: 7 },
+    { name: "Black coffee", calories: 5, protein: 0.3, carbs: 0, fat: 0 },
+    { name: "Tea with milk & sugar", calories: 60, protein: 1.5, carbs: 8, fat: 2.2 },
+    { name: "Mixed veg salad (1 bowl)", calories: 80, protein: 2.5, carbs: 12, fat: 2.5 },
+    { name: "Brown bread (1 slice)", calories: 80, protein: 3.5, carbs: 14, fat: 1 },
+    { name: "Protein shake (1 scoop)", calories: 120, protein: 24, carbs: 3, fat: 1.5 },
+    { name: "French fries, small", calories: 230, protein: 2.7, carbs: 29, fat: 11 },
+    { name: "Pizza slice, medium", calories: 285, protein: 12, carbs: 36, fat: 10 },
+    { name: "Dark chocolate (1 square)", calories: 60, protein: 0.6, carbs: 6, fat: 4 },
+  ];
+
+  /* ------------------------------------------------------------------ */
+  /* Small helpers                                                      */
+  /* ------------------------------------------------------------------ */
+  const $ = (id) => document.getElementById(id);
+  const pad2 = (n) => String(n).padStart(2, "0");
+  const toDateStr = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  const todayStr = () => toDateStr(new Date());
+  const parseDateStr = (s) => {
+    const [y, m, d] = s.split("-").map(Number);
+    return new Date(y, m - 1, d);
+  };
+  const addDays = (d, n) => { const c = new Date(d); c.setDate(c.getDate() + n); return c; };
+  const startOfWeek = (d) => { const c = new Date(d); const day = (c.getDay() + 6) % 7; return addDays(c, -day); }; // Monday start
+  const fmtHM = (mins) => {
+    const sign = mins < 0 ? "-" : "";
+    const m = Math.abs(Math.round(mins));
+    const h = Math.floor(m / 60), r = m % 60;
+    if (h === 0) return `${sign}${r}m`;
+    if (r === 0) return `${sign}${h}h`;
+    return `${sign}${h}h ${r}m`;
+  };
+  const weekdayShort = (d) => d.toLocaleDateString(undefined, { weekday: "short" });
+  const monthShort = (d) => d.toLocaleDateString(undefined, { month: "short" });
+  const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : "id-" + Math.random().toString(36).slice(2) + Date.now());
+
+  const round1 = (n) => Math.round(n * 10) / 10;
+
+  function toast(msg) {
+    const el = $("toast");
+    el.textContent = msg;
+    el.classList.remove("hidden");
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => el.classList.add("hidden"), 2600);
+  }
+
+  // Reusable chip-select group: renders `options` into #containerId, keeps
+  // its own selection state, re-renders on click, and reports the current
+  // selection to onChange (including once immediately on setup).
+  function chipGroup(containerId, options, initialId, onChange) {
+    let selected = initialId;
+    function draw() {
+      $(containerId).innerHTML = options.map((o) => `
+        <button type="button" data-chip="${o.id}"
+          class="flex-1 text-xs font-medium py-2 rounded-lg border transition"
+          style="border-color:${o.color || "#16211C"}; color:${selected === o.id ? "#fff" : (o.color || "#16211C")}; background:${selected === o.id ? (o.color || "#16211C") : "transparent"}">
+          ${o.label}
+        </button>`).join("");
+      $(containerId).querySelectorAll("[data-chip]").forEach((btn) => {
+        btn.addEventListener("click", () => { selected = btn.getAttribute("data-chip"); onChange(selected); draw(); });
+      });
+    }
+    draw();
+    onChange(selected);
+  }
+
+  // Mifflin-St Jeor BMR → activity-adjusted TDEE → goal-adjusted calorie
+  // target, with a sane floor and a standard protein/fat/carb split.
+  // General estimate, not medical advice.
+  function calcDietTargets({ sex, age, height_cm, weight_kg, activity_level, goal }) {
+    const bmr = sex === "male"
+      ? 10 * weight_kg + 6.25 * height_cm - 5 * age + 5
+      : 10 * weight_kg + 6.25 * height_cm - 5 * age - 161;
+    const tdee = bmr * (ACTIVITY_MULTIPLIERS[activity_level] || 1.375);
+
+    let target_calories = goal === "lose" ? tdee - 500 : goal === "gain" ? tdee + 300 : tdee;
+    const safeFloor = sex === "male" ? 1500 : 1200;
+    target_calories = Math.max(safeFloor, Math.round(target_calories));
+
+    const proteinPerKg = goal === "lose" ? 2.0 : goal === "gain" ? 1.8 : 1.6;
+    const target_protein_g = Math.round(weight_kg * proteinPerKg);
+
+    const fatCalories = target_calories * 0.25;
+    const target_fat_g = Math.round(fatCalories / 9);
+
+    const proteinCalories = target_protein_g * 4;
+    const remainingCalories = Math.max(0, target_calories - proteinCalories - fatCalories);
+    const target_carbs_g = Math.round(remainingCalories / 4);
+
+    return { target_calories, target_protein_g, target_carbs_g, target_fat_g };
+  }
+
+  function defaultMealForNow() {
+    const h = new Date().getHours();
+    if (h < 11) return "breakfast";
+    if (h < 16) return "lunch";
+    if (h < 20) return "dinner";
+    return "snack";
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* State                                                               */
+  /* ------------------------------------------------------------------ */
+  const state = {
+    backend: null,           // 'supabase' | 'local'
+    supabase: null,
+    session: null,
+    view: "schedule",        // 'schedule' | 'diet'
+    tasks: [],
+    activeProfile: "all",    // 'all' | student | gamer | designer
+    period: "day",           // 'day' | 'week' | 'deadlines'
+    selectedDate: todayStr(),
+    weekStart: startOfWeek(new Date()),
+    editingTaskId: null,
+    completingTaskId: null,
+    dietProfile: null,
+    foodLogs: [],
+    dpSex: "male",
+    dpGoal: "maintain",
+    ffMeal: "snack",
+    ffBase: null,
+    fDaily: false,
+  };
+
+  /* ------------------------------------------------------------------ */
+  /* Backend: local storage                                              */
+  /* ------------------------------------------------------------------ */
+  const LOCAL_KEY = "ledger:tasks:v1";
+  const localDb = {
+    async list() {
+      try { return JSON.parse(localStorage.getItem(LOCAL_KEY) || "[]"); }
+      catch { return []; }
+    },
+    async save(tasks) { localStorage.setItem(LOCAL_KEY, JSON.stringify(tasks)); },
+    async add(task) {
+      const tasks = await this.list();
+      const row = { ...task, id: uuid(), created_at: new Date().toISOString() };
+      tasks.push(row);
+      await this.save(tasks);
+      return row;
+    },
+    async update(id, patch) {
+      const tasks = await this.list();
+      const idx = tasks.findIndex((t) => t.id === id);
+      if (idx === -1) return null;
+      tasks[idx] = { ...tasks[idx], ...patch };
+      await this.save(tasks);
+      return tasks[idx];
+    },
+    async remove(id) {
+      const tasks = (await this.list()).filter((t) => t.id !== id);
+      await this.save(tasks);
+    },
+  };
+
+  const LOCAL_DIET_PROFILE_KEY = "ledger:dietProfile";
+  const LOCAL_FOOD_LOGS_KEY = "ledger:foodLogs";
+  const localDietProfileDb = {
+    async get() {
+      try { return JSON.parse(localStorage.getItem(LOCAL_DIET_PROFILE_KEY) || "null"); }
+      catch { return null; }
+    },
+    async save(profile) {
+      localStorage.setItem(LOCAL_DIET_PROFILE_KEY, JSON.stringify(profile));
+      return profile;
+    },
+  };
+  const localFoodLogDb = {
+    async list() {
+      try { return JSON.parse(localStorage.getItem(LOCAL_FOOD_LOGS_KEY) || "[]"); }
+      catch { return []; }
+    },
+    async save(list) { localStorage.setItem(LOCAL_FOOD_LOGS_KEY, JSON.stringify(list)); },
+    async add(entry) {
+      const list = await this.list();
+      const row = { ...entry, id: uuid(), created_at: new Date().toISOString() };
+      list.push(row);
+      await this.save(list);
+      return row;
+    },
+    async remove(id) {
+      const list = (await this.list()).filter((x) => x.id !== id);
+      await this.save(list);
+    },
+  };
+
+  /* ------------------------------------------------------------------ */
+  /* Backend: supabase                                                   */
+  /* ------------------------------------------------------------------ */
+  function getSupabaseConfig() {
+    let stored = {};
+    try { stored = JSON.parse(localStorage.getItem("ledger:supabaseConfig") || "{}"); } catch {}
+    const url = stored.url || DEFAULT_SUPABASE_URL;
+    const key = stored.key || DEFAULT_SUPABASE_ANON_KEY;
+    const configured = /^https?:\/\//.test(url) && key && key.length > 20 && !key.includes("YOUR_");
+    return { url, key, configured };
+  }
+
+  const supabaseDb = {
+    client: null,
+    userId: null,
+    init(client, userId) { this.client = client; this.userId = userId; },
+    async list() {
+      const { data, error } = await this.client.from("tasks").select("*").order("scheduled_date", { ascending: true });
+      if (error) { console.error(error); toast("Couldn't load tasks from the cloud."); return []; }
+      return data;
+    },
+    async add(task) {
+      const row = { ...task, user_id: this.userId };
+      const { data, error } = await this.client.from("tasks").insert(row).select().single();
+      if (error) { console.error(error); toast("Couldn't save that task."); return null; }
+      return data;
+    },
+    async update(id, patch) {
+      const { data, error } = await this.client.from("tasks").update(patch).eq("id", id).select().single();
+      if (error) { console.error(error); toast("Couldn't update that task."); return null; }
+      return data;
+    },
+    async remove(id) {
+      const { error } = await this.client.from("tasks").delete().eq("id", id);
+      if (error) { console.error(error); toast("Couldn't delete that task."); }
+    },
+  };
+
+  const supabaseDietProfileDb = {
+    client: null, userId: null,
+    init(client, userId) { this.client = client; this.userId = userId; },
+    async get() {
+      const { data, error } = await this.client.from("diet_profiles").select("*").eq("user_id", this.userId).maybeSingle();
+      if (error) { console.error(error); return null; }
+      return data;
+    },
+    async save(profile) {
+      const row = { ...profile, user_id: this.userId, updated_at: new Date().toISOString() };
+      const { data, error } = await this.client.from("diet_profiles").upsert(row, { onConflict: "user_id" }).select().single();
+      if (error) { console.error(error); toast("Couldn't save your diet profile."); return null; }
+      return data;
+    },
+  };
+  const supabaseFoodLogDb = {
+    client: null, userId: null,
+    init(client, userId) { this.client = client; this.userId = userId; },
+    async list() {
+      const { data, error } = await this.client.from("food_logs").select("*")
+        .order("log_date", { ascending: true }).order("created_at", { ascending: true });
+      if (error) { console.error(error); toast("Couldn't load your food log."); return []; }
+      return data;
+    },
+    async add(entry) {
+      const row = { ...entry, user_id: this.userId };
+      const { data, error } = await this.client.from("food_logs").insert(row).select().single();
+      if (error) { console.error(error); toast("Couldn't save that food."); return null; }
+      return data;
+    },
+    async remove(id) {
+      const { error } = await this.client.from("food_logs").delete().eq("id", id);
+      if (error) { console.error(error); toast("Couldn't delete that entry."); }
+    },
+  };
+
+  function db() { return state.backend === "supabase" ? supabaseDb : localDb; }
+  function dietProfileDb() { return state.backend === "supabase" ? supabaseDietProfileDb : localDietProfileDb; }
+  function foodLogDb() { return state.backend === "supabase" ? supabaseFoodLogDb : localFoodLogDb; }
+
+  async function refreshTasks() {
+    state.tasks = await db().list();
+    renderAll();
+  }
+
+  async function refreshDiet() {
+    state.dietProfile = await dietProfileDb().get();
+    state.foodLogs = await foodLogDb().list();
+    if (state.view === "diet") renderDietAll();
+  }
+
+
+  /* ------------------------------------------------------------------ */
+  /* Derived data                                                        */
+  /* ------------------------------------------------------------------ */
+  function minutesForTask(t) {
+    return t.completed && t.actual_minutes != null ? t.actual_minutes : t.estimated_minutes;
+  }
+
+  function tasksForDate(dateStr) {
+    return state.tasks.filter((t) => t.scheduled_date === dateStr);
+  }
+
+  function computeDayUsage(dateStr) {
+    const usage = { student: 0, gamer: 0, designer: 0 };
+    for (const t of tasksForDate(dateStr)) usage[t.profile] += minutesForTask(t);
+    const total = usage.student + usage.gamer + usage.designer;
+    return { ...usage, total, remaining: DAY_MINUTES - total };
+  }
+
+  function deadlineStatus(t) {
+    if (!t.deadline) return null;
+    if (t.completed) return { label: "Done", tone: "done" };
+    const dl = new Date(t.deadline).getTime();
+    const now = Date.now();
+    if (dl < now) return { label: "Overdue", tone: "overdue" };
+    if (dl - now < 24 * 3600 * 1000) return { label: "Due soon", tone: "soon" };
+    return { label: new Date(t.deadline).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }), tone: "normal" };
+  }
+
+  function filteredTasks() {
+    let list = state.tasks;
+    if (state.activeProfile !== "all") list = list.filter((t) => t.profile === state.activeProfile);
+
+    if (state.period === "day") {
+      list = list.filter((t) => t.scheduled_date === state.selectedDate);
+    } else if (state.period === "week") {
+      const start = state.weekStart, end = addDays(state.weekStart, 6);
+      list = list.filter((t) => {
+        const d = parseDateStr(t.scheduled_date);
+        return d >= start && d <= end;
+      });
+    } else if (state.period === "deadlines") {
+      list = list.filter((t) => !!t.deadline);
+      list = [...list].sort((a, b) => new Date(a.deadline) - new Date(b.deadline));
+      return list;
+    }
+    return [...list].sort((a, b) => {
+      if (a.completed !== b.completed) return a.completed ? 1 : -1;
+      if (a.deadline && b.deadline) return new Date(a.deadline) - new Date(b.deadline);
+      if (a.deadline) return -1;
+      if (b.deadline) return 1;
+      return (a.title || "").localeCompare(b.title || "");
+    });
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Rendering: top bar profile tabs                                     */
+  /* ------------------------------------------------------------------ */
+  function renderProfileTabs() {
+    const wrap = $("profileTabs");
+    const tabs = [{ id: "all", label: "All", color: "#16211C" }, ...PROFILES];
+    wrap.innerHTML = tabs.map((p) => `
+      <button data-profile-tab="${p.id}"
+        class="shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition whitespace-nowrap ${state.activeProfile === p.id ? "text-white" : "text-inksoft hover:text-ink"}"
+        style="${state.activeProfile === p.id ? `background:${p.color}` : ""}">
+        ${p.label}
+      </button>`).join("");
+    wrap.querySelectorAll("[data-profile-tab]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.activeProfile = btn.getAttribute("data-profile-tab");
+        renderAll();
+      });
+    });
+  }
+
+  function renderPeriodTabs() {
+    const tabs = [
+      { id: "day", label: "Selected day" },
+      { id: "week", label: "This week" },
+      { id: "deadlines", label: "All deadlines" },
+    ];
+    $("periodTabs").innerHTML = tabs.map((p) => `
+      <button data-period-tab="${p.id}"
+        class="px-3 py-1.5 rounded-full font-medium transition whitespace-nowrap ${state.period === p.id ? "bg-ink text-paper" : "text-inksoft hover:text-ink"}">
+        ${p.label}
+      </button>`).join("");
+    document.querySelectorAll("[data-period-tab]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.period = btn.getAttribute("data-period-tab");
+        renderAll();
+      });
+    });
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Rendering: date strip                                                */
+  /* ------------------------------------------------------------------ */
+  function renderDateStrip() {
+    const strip = $("dateStrip");
+    const days = Array.from({ length: 7 }, (_, i) => addDays(state.weekStart, i));
+    strip.innerHTML = days.map((d) => {
+      const ds = toDateStr(d);
+      const isSelected = ds === state.selectedDate && state.period === "day";
+      const isToday = ds === todayStr();
+      const usage = computeDayUsage(ds);
+      const ratio = Math.max(0, Math.min(1, usage.remaining / DAY_MINUTES));
+      const barColor = usage.remaining < 0 ? "#C64536" : ratio < 0.2 ? "#D8A63D" : "#1B9C87";
+      return `
+        <button data-date="${ds}" class="shrink-0 w-14 rounded-xl px-1.5 py-2 border transition flex flex-col items-center gap-1
+          ${isSelected ? "border-ink bg-ink text-paper" : "border-line bg-white hover:border-ink/40"}">
+          <span class="text-[10px] uppercase tracking-wide ${isSelected ? "text-paper/70" : "text-inksoft"}">${weekdayShort(d)}</span>
+          <span class="text-sm font-semibold tabular ${isToday && !isSelected ? "text-gold" : ""}">${d.getDate()}</span>
+          <span class="w-8 h-1 rounded-full" style="background:${isSelected ? "rgba(255,255,255,.35)" : "#E4E9E4"}">
+            <span class="block h-full rounded-full" style="width:${Math.round((1 - ratio) * 100)}%; background:${isSelected ? "#fff" : barColor}"></span>
+          </span>
+        </button>`;
+    }).join("");
+    strip.querySelectorAll("[data-date]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.selectedDate = btn.getAttribute("data-date");
+        state.period = "day";
+        renderAll();
+      });
+    });
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Rendering: dial (SVG radial budget gauge)                           */
+  /* ------------------------------------------------------------------ */
+  function polar(cx, cy, r, angleDeg) {
+    const a = ((angleDeg - 90) * Math.PI) / 180;
+    return { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
+  }
+  function arcPath(cx, cy, r, startDeg, endDeg) {
+    if (endDeg - startDeg >= 359.999) endDeg = startDeg + 359.999;
+    const s = polar(cx, cy, r, startDeg), e = polar(cx, cy, r, endDeg);
+    const large = endDeg - startDeg > 180 ? 1 : 0;
+    return `M ${s.x} ${s.y} A ${r} ${r} 0 ${large} 1 ${e.x} ${e.y}`;
+  }
+
+  function renderDial() {
+    const dateStr = state.period === "day" ? state.selectedDate : todayStr();
+    $("dialDateLabel").textContent = parseDateStr(dateStr).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+
+    const usage = computeDayUsage(dateStr);
+    const cx = 110, cy = 110, r = 88, track = 14;
+
+    let svg = "";
+    // hour ticks
+    for (let i = 0; i < 16; i++) {
+      const deg = (360 / 16) * i;
+      const p1 = polar(cx, cy, r + track / 2 + 2, deg);
+      const p2 = polar(cx, cy, r + track / 2 + 7, deg);
+      svg += `<line x1="${p1.x}" y1="${p1.y}" x2="${p2.x}" y2="${p2.y}" stroke="#CDD6CE" stroke-width="1.5"/>`;
+    }
+    // base track
+    svg += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#E4E9E4" stroke-width="${track}"/>`;
+
+    // stacked profile arcs
+    let cursorDeg = 0;
+    const cappedTotal = Math.min(usage.total, DAY_MINUTES);
+    const scale = usage.total > 0 ? cappedTotal / usage.total : 0;
+    for (const p of PROFILES) {
+      const mins = usage[p.id] * scale;
+      const deg = (mins / DAY_MINUTES) * 360;
+      if (deg > 0.5) {
+        svg += `<path d="${arcPath(cx, cy, r, cursorDeg, cursorDeg + deg)}" fill="none" stroke="${p.color}" stroke-width="${track}" stroke-linecap="butt"/>`;
+      }
+      cursorDeg += deg;
+    }
+    // overtime ring (outer, red) if over budget
+    if (usage.remaining < 0) {
+      const overDeg = Math.min(360, (Math.abs(usage.remaining) / DAY_MINUTES) * 360);
+      svg += `<circle cx="${cx}" cy="${cy}" r="${r + track / 2 + 10}" fill="none" stroke="#C64536" stroke-width="4" stroke-dasharray="${(overDeg/360)*2*Math.PI*(r+track/2+10)} 999"/>`;
+    }
+
+    $("dialSvg").innerHTML = svg;
+
+    const remainingEl = $("dialRemainingText");
+    remainingEl.textContent = fmtHM(usage.remaining);
+    remainingEl.className = "font-display text-3xl tabular " + (usage.remaining < 0 ? "text-danger" : usage.remaining < 60 ? "text-golddeep" : "text-ink");
+
+    $("dialLegend").innerHTML = PROFILES.map((p) => `
+      <div class="flex items-center justify-between text-xs">
+        <span class="flex items-center gap-1.5 text-inksoft"><span class="w-2 h-2 rounded-full" style="background:${p.color}"></span>${p.label}</span>
+        <span class="tabular font-medium">${fmtHM(usage[p.id])}</span>
+      </div>`).join("");
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Rendering: task list                                                 */
+  /* ------------------------------------------------------------------ */
+  function taskRowHtml(t) {
+    const p = profileById[t.profile];
+    const status = deadlineStatus(t);
+    const toneClass = { overdue: "text-danger", soon: "text-golddeep", normal: "text-inksoft", done: "text-inksoft/60" }[status?.tone] || "text-inksoft";
+    const mins = minutesForTask(t);
+    return `
+      <div class="flex items-start gap-3 px-4 py-3.5 hover:bg-black/[0.02] transition" data-task-row="${t.id}">
+        <button data-toggle="${t.id}" class="mt-0.5 shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center transition"
+          style="border-color:${t.completed ? p.color : "#CDD6CE"}; background:${t.completed ? p.color : "transparent"}">
+          ${t.completed ? '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="4"><path d="M20 6 9 17l-5-5"/></svg>' : ""}
+        </button>
+
+        <div class="flex-1 min-w-0 cursor-pointer" data-edit="${t.id}">
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="text-sm font-medium ${t.completed ? "line-through text-inksoft" : ""}">${escapeHtml(t.title)}</span>
+            <span class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-medium" style="background:${p.color}1A; color:${p.color}">${p.label}</span>
+            ${t.is_daily ? `<span class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-medium bg-ink/10 text-ink">Daily</span>` : ""}
+          </div>
+          <div class="mt-1 flex items-center gap-2 text-xs text-inksoft flex-wrap">
+            <span class="tabular">${escapeHtml(t.scheduled_date)}</span>
+            <span class="tabular">${fmtHM(mins)}${t.completed && t.actual_minutes != null && t.actual_minutes !== t.estimated_minutes ? ` <span class="text-inksoft/60">(est ${fmtHM(t.estimated_minutes)})</span>` : ""}</span>
+            ${status ? `<span class="font-medium ${toneClass}">${status.label}</span>` : ""}
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function escapeHtml(s) {
+    return String(s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  function renderTaskList() {
+    const list = filteredTasks();
+    const wrap = $("taskList");
+    const empty = $("emptyState");
+    if (list.length === 0) {
+      wrap.innerHTML = "";
+      empty.classList.remove("hidden");
+    } else {
+      empty.classList.add("hidden");
+      wrap.innerHTML = list.map(taskRowHtml).join("");
+    }
+
+    wrap.querySelectorAll("[data-toggle]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        onToggleTask(btn.getAttribute("data-toggle"));
+      });
+    });
+    wrap.querySelectorAll("[data-edit]").forEach((el) => {
+      el.addEventListener("click", () => openTaskModal(el.getAttribute("data-edit")));
+    });
+  }
+
+  function renderAll() {
+    renderViewTabs();
+    renderProfileTabs();
+    renderPeriodTabs();
+    renderDateStrip();
+    renderDial();
+    renderTaskList();
+    if (state.view === "diet") renderDietAll();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* View switcher (Schedule / Diet)                                     */
+  /* ------------------------------------------------------------------ */
+  function renderViewTabs() {
+    const tabs = [{ id: "schedule", label: "Schedule" }, { id: "diet", label: "Diet" }];
+    $("viewTabs").innerHTML = tabs.map((v) => `
+      <button data-view-tab="${v.id}" class="px-3 py-1.5 rounded-full text-xs font-medium transition whitespace-nowrap ${state.view === v.id ? "bg-ink text-paper" : "text-inksoft hover:text-ink"}">
+        ${v.label}
+      </button>`).join("");
+    $("viewTabs").querySelectorAll("[data-view-tab]").forEach((btn) => {
+      btn.addEventListener("click", () => switchView(btn.getAttribute("data-view-tab")));
+    });
+  }
+
+  function switchView(view) {
+    state.view = view;
+    $("scheduleView").classList.toggle("hidden", view !== "schedule");
+    $("dietView").classList.toggle("hidden", view !== "diet");
+    $("profileTabs").classList.toggle("hidden", view !== "schedule");
+    $("addTaskBtn").classList.toggle("hidden", view !== "schedule");
+    $("addFoodBtn").classList.toggle("hidden", view !== "diet");
+    renderViewTabs();
+    if (view === "diet") {
+      renderDietAll();
+      if (!state.dietProfile) openDietProfileModal();
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Diet: rendering                                                     */
+  /* ------------------------------------------------------------------ */
+  function renderQuickAddChips() {
+    $("quickAddChips").innerHTML = COMMON_FOODS.map((f, i) => `
+      <button type="button" data-quickfood="${i}" class="text-xs px-3 py-1.5 rounded-full border border-line bg-white hover:border-ink transition">${escapeHtml(f.name)}</button>`).join("");
+    $("quickAddChips").querySelectorAll("[data-quickfood]").forEach((btn) => {
+      btn.addEventListener("click", () => openFoodModal(COMMON_FOODS[Number(btn.getAttribute("data-quickfood"))]));
+    });
+  }
+
+  function foodLogsForDate(dateStr) {
+    return state.foodLogs.filter((f) => f.log_date === dateStr);
+  }
+
+  function renderCalorieRing() {
+    const dateStr = state.selectedDate;
+    $("calDateLabel").textContent = parseDateStr(dateStr).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+
+    const profile = state.dietProfile;
+    const dayLogs = foodLogsForDate(dateStr);
+    const consumed = dayLogs.reduce((s, f) => s + (f.calories || 0), 0);
+    const target = profile.target_calories;
+    const remaining = target - consumed;
+
+    const cx = 110, cy = 110, r = 88, track = 14;
+    let svg = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#E4E9E4" stroke-width="${track}"/>`;
+    const pct = target > 0 ? Math.max(0, Math.min(1, consumed / target)) : 0;
+    const deg = pct * 360;
+    const ringColor = consumed > target ? "#C64536" : "#D8A63D";
+    if (deg > 0.5) svg += `<path d="${arcPath(cx, cy, r, 0, deg)}" fill="none" stroke="${ringColor}" stroke-width="${track}"/>`;
+    if (consumed > target && target > 0) {
+      const overDeg = Math.min(360, ((consumed - target) / target) * 360);
+      const outerR = r + track / 2 + 10;
+      svg += `<circle cx="${cx}" cy="${cy}" r="${outerR}" fill="none" stroke="#C64536" stroke-width="4" stroke-dasharray="${(overDeg / 360) * 2 * Math.PI * outerR} 999"/>`;
+    }
+    $("calSvg").innerHTML = svg;
+
+    const remEl = $("calRemainingText");
+    remEl.textContent = `${Math.abs(Math.round(remaining))} kcal`;
+    remEl.className = "font-display text-3xl tabular " + (remaining < 0 ? "text-danger" : "text-ink");
+    $("calTargetCaption").textContent = remaining < 0
+      ? `${Math.round(consumed)} of ${target} kcal — over budget`
+      : `left of ${target} kcal target`;
+
+    const totals = { protein: 0, carbs: 0, fat: 0 };
+    dayLogs.forEach((f) => {
+      totals.protein += f.protein_g || 0;
+      totals.carbs += f.carbs_g || 0;
+      totals.fat += f.fat_g || 0;
+    });
+    const targets = { protein: profile.target_protein_g, carbs: profile.target_carbs_g, fat: profile.target_fat_g };
+
+    $("macroBars").innerHTML = MACRO_META.map((m) => {
+      const cur = totals[m.id], tgt = targets[m.id] || 0;
+      const barPct = tgt > 0 ? Math.min(100, Math.round((cur / tgt) * 100)) : 0;
+      return `
+        <div>
+          <div class="flex items-center justify-between text-xs mb-1">
+            <span class="text-inksoft">${m.label}</span>
+            <span class="tabular font-medium">${Math.round(cur)}g${tgt ? ` / ${tgt}g` : ""}</span>
+          </div>
+          <div class="w-full h-1.5 rounded-full" style="background:#E4E9E4">
+            <div class="h-full rounded-full" style="width:${barPct}%; background:${m.color}"></div>
+          </div>
+        </div>`;
+    }).join("");
+  }
+
+  function renderFoodList() {
+    const dateStr = state.selectedDate;
+    const dayLogs = foodLogsForDate(dateStr);
+    const wrap = $("foodList");
+    const empty = $("foodEmptyState");
+
+    if (dayLogs.length === 0) {
+      wrap.innerHTML = "";
+      empty.classList.remove("hidden");
+      return;
+    }
+    empty.classList.add("hidden");
+
+    const order = ["breakfast", "lunch", "dinner", "snack"];
+    const groups = order.map((m) => ({
+      meal: m,
+      items: dayLogs.filter((f) => f.meal === m),
+    })).filter((g) => g.items.length);
+
+    wrap.innerHTML = groups.map((g) => `
+      <div class="border-t border-line first:border-t-0">
+        <div class="px-4 pt-3 pb-1 text-[10px] uppercase tracking-wide text-inksoft font-medium">${g.meal}</div>
+        <div class="ruled">
+          ${g.items.map((f) => `
+            <div class="flex items-start gap-3 px-4 py-3 hover:bg-black/[0.02] transition">
+              <div class="flex-1 min-w-0">
+                <div class="text-sm font-medium">${escapeHtml(f.food_name)}</div>
+                <div class="mt-0.5 text-xs text-inksoft tabular">${Math.round(f.calories)} kcal · P ${Math.round(f.protein_g || 0)}g · C ${Math.round(f.carbs_g || 0)}g · F ${Math.round(f.fat_g || 0)}g</div>
+              </div>
+              <button data-remove-food="${f.id}" class="shrink-0 w-7 h-7 rounded-full hover:bg-black/5 flex items-center justify-center text-inksoft">✕</button>
+            </div>`).join("")}
+        </div>
+      </div>`).join("");
+
+    wrap.querySelectorAll("[data-remove-food]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const id = btn.getAttribute("data-remove-food");
+        await foodLogDb().remove(id);
+        state.foodLogs = state.foodLogs.filter((f) => f.id !== id);
+        renderDietAll();
+      });
+    });
+  }
+
+  function renderDietAll() {
+    renderQuickAddChips();
+    if (!state.dietProfile) {
+      $("calSvg").innerHTML = "";
+      $("calRemainingText").textContent = "—";
+      $("calRemainingText").className = "font-display text-3xl tabular text-inksoft";
+      $("calTargetCaption").textContent = "Add your physical details to get a target.";
+      $("macroBars").innerHTML = "";
+    } else {
+      renderCalorieRing();
+    }
+    renderFoodList();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Task actions                                                        */
+  /* ------------------------------------------------------------------ */
+  function onToggleTask(id) {
+    const t = state.tasks.find((x) => x.id === id);
+    if (!t) return;
+    if (t.completed) {
+      // revert to incomplete
+      updateTaskLocal(id, { completed: false, actual_minutes: null });
+      return;
+    }
+    state.completingTaskId = id;
+    $("completeTaskTitle").textContent = t.title;
+    const est = t.estimated_minutes;
+    $("cActHours").value = Math.floor(est / 60);
+    $("cActMinutes").value = est % 60;
+    updateCompleteDelta();
+    openModal("completeModal");
+  }
+
+  function updateCompleteDelta() {
+    const t = state.tasks.find((x) => x.id === state.completingTaskId);
+    if (!t) return;
+    const actual = (Number($("cActHours").value) || 0) * 60 + (Number($("cActMinutes").value) || 0);
+    const diff = actual - t.estimated_minutes;
+    const el = $("completeDelta");
+    if (diff === 0) { el.textContent = "Right on estimate — no change to the day's budget."; }
+    else if (diff < 0) { el.textContent = `Finished early — ${fmtHM(-diff)} goes back into the day's budget.`; }
+    else { el.textContent = `Ran over — ${fmtHM(diff)} extra comes out of the day's budget.`; }
+  }
+
+  async function updateTaskLocal(id, patch) {
+    const updated = await db().update(id, patch);
+    if (updated) {
+      const idx = state.tasks.findIndex((t) => t.id === id);
+      if (idx !== -1) state.tasks[idx] = updated;
+      renderAll();
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Daily task rollover                                                 */
+  /* ------------------------------------------------------------------ */
+  function rolloverCandidates() {
+    const today = todayStr();
+    return state.tasks.filter((t) => t.is_daily && !t.deadline && !t.completed && t.scheduled_date < today && !t.rollover_reviewed);
+  }
+
+  function renderRolloverList() {
+    const list = rolloverCandidates();
+    if (list.length === 0) { closeModal("rolloverModal"); return; }
+
+    $("rolloverList").innerHTML = list.map((t) => `
+      <div class="flex items-center justify-between gap-2 border border-line rounded-lg px-3 py-2.5">
+        <div class="min-w-0">
+          <div class="text-sm font-medium truncate">${escapeHtml(t.title)}</div>
+          <div class="text-xs text-inksoft tabular">was ${escapeHtml(t.scheduled_date)} · ${fmtHM(t.estimated_minutes)}</div>
+        </div>
+        <div class="shrink-0 flex items-center gap-1.5">
+          <button data-roll-add="${t.id}" class="text-xs font-medium px-2.5 py-1.5 rounded-lg bg-ink text-paper hover:bg-ink/90">Add to today</button>
+          <button data-roll-skip="${t.id}" class="text-xs font-medium px-2.5 py-1.5 rounded-lg border border-line text-inksoft hover:border-ink">Skip</button>
+        </div>
+      </div>`).join("");
+
+    $("rolloverList").querySelectorAll("[data-roll-add]").forEach((btn) => {
+      btn.addEventListener("click", () => resolveRollover(btn.getAttribute("data-roll-add"), true));
+    });
+    $("rolloverList").querySelectorAll("[data-roll-skip]").forEach((btn) => {
+      btn.addEventListener("click", () => resolveRollover(btn.getAttribute("data-roll-skip"), false));
+    });
+  }
+
+  async function resolveRollover(id, moveIt) {
+    const patch = moveIt
+      ? { scheduled_date: todayStr(), rollover_reviewed: false }
+      : { rollover_reviewed: true };
+    await updateTaskLocal(id, patch);
+    renderRolloverList();
+    if (moveIt) toast("Moved to today.");
+  }
+
+  function checkDailyRollover() {
+    if (rolloverCandidates().length === 0) return;
+    renderRolloverList();
+    openModal("rolloverModal");
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Task modal (add/edit)                                               */
+  /* ------------------------------------------------------------------ */
+  function renderProfileChips(selectedId) {
+    state.fSelectedProfile = selectedId;
+    $("fProfileChips").innerHTML = PROFILES.map((p) => `
+      <button type="button" data-fprofile="${p.id}"
+        class="flex-1 text-xs font-medium py-2 rounded-lg border transition"
+        style="border-color:${p.color}; color:${selectedId === p.id ? "#fff" : p.color}; background:${selectedId === p.id ? p.color : "transparent"}">
+        ${p.label}
+      </button>`).join("");
+    $("fProfileChips").querySelectorAll("[data-fprofile]").forEach((btn) => {
+      btn.addEventListener("click", () => renderProfileChips(btn.getAttribute("data-fprofile")));
+    });
+  }
+
+  function setDailyToggle(on) {
+    state.fDaily = on;
+    $("fDailyToggle").style.background = on ? "#1B9C87" : "#CDD6CE";
+    $("fDailyDot").style.transform = on ? "translateX(20px)" : "translateX(0)";
+  }
+  $("fDailyToggle").addEventListener("click", () => {
+    const next = !state.fDaily;
+    if (next && $("fDeadline").value) $("fDeadline").value = "";
+    setDailyToggle(next);
+  });
+  $("fDeadline").addEventListener("change", () => {
+    if ($("fDeadline").value && state.fDaily) setDailyToggle(false);
+  });
+
+  function openTaskModal(taskId) {
+    state.editingTaskId = taskId || null;
+    const t = taskId ? state.tasks.find((x) => x.id === taskId) : null;
+
+    $("taskModalTitle").textContent = t ? "Edit task" : "New task";
+    $("deleteTaskBtn").classList.toggle("hidden", !t);
+    $("fEstWarning").classList.add("hidden");
+
+    $("fTitle").value = t ? t.title : "";
+    renderProfileChips(t ? t.profile : (state.activeProfile !== "all" ? state.activeProfile : "student"));
+    $("fScheduledDate").value = t ? t.scheduled_date : state.selectedDate;
+    $("fDeadline").value = t && t.deadline ? toLocalInputValue(t.deadline) : "";
+    $("fEstHours").value = t ? Math.floor(t.estimated_minutes / 60) : 1;
+    $("fEstMinutes").value = t ? t.estimated_minutes % 60 : 0;
+    setDailyToggle(t ? !!t.is_daily : false);
+
+    openModal("taskModal");
+  }
+
+  function toLocalInputValue(iso) {
+    const d = new Date(iso);
+    const off = d.getTimezoneOffset();
+    const local = new Date(d.getTime() - off * 60000);
+    return local.toISOString().slice(0, 16);
+  }
+
+  $("taskForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const title = $("fTitle").value.trim();
+    if (!title) return;
+    const selectedProfile = state.fSelectedProfile || PROFILES[0].id;
+
+    const estHours = Number($("fEstHours").value) || 0;
+    const estMinutes = Number($("fEstMinutes").value) || 0;
+    const estimated_minutes = estHours * 60 + estMinutes;
+    if (estimated_minutes <= 0) { toast("Add an estimated duration first."); return; }
+
+    const scheduled_date = $("fScheduledDate").value;
+    const deadlineRaw = $("fDeadline").value;
+    const deadline = deadlineRaw ? new Date(deadlineRaw).toISOString() : null;
+    const is_daily = !!state.fDaily && !deadline; // daily rollover only applies to no-deadline tasks
+
+    // warn (not block) if this pushes the day over budget
+    const existingMinsOnDay = tasksForDate(scheduled_date)
+      .filter((t) => t.id !== state.editingTaskId)
+      .reduce((sum, t) => sum + minutesForTask(t), 0);
+    const projected = existingMinsOnDay + estimated_minutes;
+    if (projected > DAY_MINUTES) {
+      $("fEstWarning").textContent = `Heads up: this puts ${scheduled_date} at ${fmtHM(projected)} of its 16h budget.`;
+      $("fEstWarning").classList.remove("hidden");
+    }
+
+    const payload = { title, profile: selectedProfile, scheduled_date, deadline, estimated_minutes, is_daily };
+
+    if (state.editingTaskId) {
+      await updateTaskLocal(state.editingTaskId, payload);
+    } else {
+      const created = await db().add({ ...payload, completed: false, actual_minutes: null, rollover_reviewed: false });
+      if (created) state.tasks.push(created);
+    }
+    closeModal("taskModal");
+    renderAll();
+  });
+
+  $("deleteTaskBtn").addEventListener("click", async () => {
+    if (!state.editingTaskId) return;
+    await db().remove(state.editingTaskId);
+    state.tasks = state.tasks.filter((t) => t.id !== state.editingTaskId);
+    closeModal("taskModal");
+    renderAll();
+  });
+
+  $("cActHours").addEventListener("input", updateCompleteDelta);
+  $("cActMinutes").addEventListener("input", updateCompleteDelta);
+
+  $("confirmCompleteBtn").addEventListener("click", async () => {
+    const id = state.completingTaskId;
+    if (!id) return;
+    const actual_minutes = (Number($("cActHours").value) || 0) * 60 + (Number($("cActMinutes").value) || 0);
+    await updateTaskLocal(id, { completed: true, actual_minutes });
+    closeModal("completeModal");
+    toast("Task completed — budget updated.");
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* Diet: physical-details (onboarding/edit) modal                      */
+  /* ------------------------------------------------------------------ */
+  function openDietProfileModal() {
+    const p = state.dietProfile;
+    chipGroup("dpSexChips", SEX_OPTIONS, p ? p.sex : "male", (id) => { state.dpSex = id; });
+    chipGroup("dpGoalChips", GOAL_OPTIONS, p ? p.goal : "maintain", (id) => { state.dpGoal = id; });
+    $("dpAge").value = p ? p.age : "";
+    $("dpHeight").value = p ? p.height_cm : "";
+    $("dpWeight").value = p ? p.weight_kg : "";
+    $("dpActivity").value = p ? p.activity_level : "moderate";
+    openModal("dietProfileModal");
+  }
+
+  $("editDietProfileBtn").addEventListener("click", openDietProfileModal);
+
+  $("dietProfileForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const sex = state.dpSex || "male";
+    const goal = state.dpGoal || "maintain";
+    const age = Number($("dpAge").value);
+    const height_cm = Number($("dpHeight").value);
+    const weight_kg = Number($("dpWeight").value);
+    const activity_level = $("dpActivity").value;
+    if (!age || !height_cm || !weight_kg) { toast("Fill in your age, height and weight first."); return; }
+
+    const targets = calcDietTargets({ sex, age, height_cm, weight_kg, activity_level, goal });
+    const profile = { sex, age, height_cm, weight_kg, activity_level, goal, ...targets };
+    const saved = await dietProfileDb().save(profile);
+    state.dietProfile = saved || profile;
+    closeModal("dietProfileModal");
+    renderDietAll();
+    toast(`Target set: ${state.dietProfile.target_calories} kcal/day.`);
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* Diet: log food modal                                                */
+  /* ------------------------------------------------------------------ */
+  function openFoodModal(quickFood) {
+    state.ffBase = quickFood ? { calories: quickFood.calories, protein: quickFood.protein, carbs: quickFood.carbs, fat: quickFood.fat } : null;
+    chipGroup("ffMealChips", MEAL_OPTIONS, defaultMealForNow(), (id) => { state.ffMeal = id; });
+    $("ffName").value = quickFood ? quickFood.name : "";
+    $("ffServings").value = 1;
+    $("ffCalories").value = quickFood ? quickFood.calories : "";
+    $("ffProtein").value = quickFood ? quickFood.protein : 0;
+    $("ffCarbs").value = quickFood ? quickFood.carbs : 0;
+    $("ffFat").value = quickFood ? quickFood.fat : 0;
+    openModal("foodModal");
+  }
+
+  $("ffServings").addEventListener("input", () => {
+    if (!state.ffBase) return;
+    const s = Number($("ffServings").value) || 0;
+    $("ffCalories").value = Math.round(state.ffBase.calories * s);
+    $("ffProtein").value = round1(state.ffBase.protein * s);
+    $("ffCarbs").value = round1(state.ffBase.carbs * s);
+    $("ffFat").value = round1(state.ffBase.fat * s);
+  });
+  ["ffCalories", "ffProtein", "ffCarbs", "ffFat"].forEach((id) => {
+    $(id).addEventListener("input", () => { state.ffBase = null; });
+  });
+
+  $("foodForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const food_name = $("ffName").value.trim();
+    if (!food_name) return;
+    const calories = Math.round(Number($("ffCalories").value) || 0);
+    const protein_g = Number($("ffProtein").value) || 0;
+    const carbs_g = Number($("ffCarbs").value) || 0;
+    const fat_g = Number($("ffFat").value) || 0;
+    const meal = state.ffMeal || "snack";
+
+    const payload = { log_date: state.selectedDate, meal, food_name, calories, protein_g, carbs_g, fat_g };
+    const created = await foodLogDb().add(payload);
+    if (created) state.foodLogs.push(created);
+    closeModal("foodModal");
+    renderDietAll();
+    toast("Logged.");
+  });
+
+  document.querySelectorAll("[data-open-food]").forEach((btn) => btn.addEventListener("click", () => openFoodModal(null)));
+  $("addFoodBtn").addEventListener("click", () => openFoodModal(null));
+
+  /* ------------------------------------------------------------------ */
+  /* Modal plumbing                                                      */
+  /* ------------------------------------------------------------------ */
+  function openModal(id) { $(id).classList.remove("hidden"); $(id).classList.add("flex"); }
+  function closeModal(id) { $(id).classList.add("hidden"); $(id).classList.remove("flex"); }
+
+  document.querySelectorAll("[data-close-modal]").forEach((btn) => {
+    btn.addEventListener("click", () => btn.closest(".fixed").classList.add("hidden"));
+  });
+  document.querySelectorAll(".modal-backdrop").forEach((el) => {
+    el.addEventListener("click", (e) => { if (e.target === el) el.classList.add("hidden"); });
+  });
+  document.querySelectorAll("[data-open-add]").forEach((btn) => btn.addEventListener("click", () => openTaskModal(null)));
+
+  $("addTaskBtn").addEventListener("click", () => openTaskModal(null));
+  $("weekPrevBtn").addEventListener("click", () => { state.weekStart = addDays(state.weekStart, -7); renderAll(); });
+  $("weekNextBtn").addEventListener("click", () => { state.weekStart = addDays(state.weekStart, 7); renderAll(); });
+  $("todayBtn").addEventListener("click", () => {
+    state.weekStart = startOfWeek(new Date());
+    state.selectedDate = todayStr();
+    state.period = "day";
+    renderAll();
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* Settings modal                                                      */
+  /* ------------------------------------------------------------------ */
+  $("settingsBtn").addEventListener("click", openSettings);
+  $("openSetupFromBanner").addEventListener("click", openSettings);
+  function openSettings() {
+    const cfg = getSupabaseConfig();
+    $("setUrl").value = cfg.url.includes("YOUR_") ? "" : cfg.url;
+    $("setKey").value = cfg.key.includes("YOUR_") ? "" : cfg.key;
+    $("syncStatusLabel").textContent = state.backend === "supabase"
+      ? `Signed in as ${state.session?.user?.email || "unknown"}`
+      : "Local-only mode — not syncing";
+    $("signOutBtn").classList.toggle("hidden", state.backend !== "supabase");
+    openModal("settingsModal");
+  }
+  $("saveSettingsBtn").addEventListener("click", () => {
+    const url = $("setUrl").value.trim();
+    const key = $("setKey").value.trim();
+    if (!url || !key) { toast("Enter both the URL and the anon key."); return; }
+    localStorage.setItem("ledger:supabaseConfig", JSON.stringify({ url, key }));
+    toast("Saved — reconnecting…");
+    setTimeout(() => location.reload(), 500);
+  });
+  $("signOutBtn").addEventListener("click", async () => {
+    if (state.supabase) await state.supabase.auth.signOut();
+    location.reload();
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* Boot / auth                                                         */
+  /* ------------------------------------------------------------------ */
+  async function boot() {
+    const cfg = getSupabaseConfig();
+
+    if (!cfg.configured) {
+      startLocalMode();
+      return;
+    }
+
+    const client = window.supabase.createClient(cfg.url, cfg.key);
+    state.supabase = client;
+
+    const { data: { session } } = await client.auth.getSession();
+    if (session) {
+      startSupabaseMode(client, session);
+    } else {
+      showAuthScreen(client);
+    }
+
+    client.auth.onAuthStateChange((event, session) => {
+      if (event === "SIGNED_IN" && session) startSupabaseMode(client, session);
+      if (event === "SIGNED_OUT") location.reload();
+    });
+  }
+
+  function showAuthScreen(client) {
+    $("loadingScreen").classList.add("hidden");
+    $("authScreen").classList.remove("hidden");
+    $("authScreen").classList.add("flex");
+
+    $("authSendBtn").addEventListener("click", async () => {
+      const email = $("authEmail").value.trim();
+      if (!email) return;
+      $("authSendBtn").disabled = true;
+      $("authSendBtn").textContent = "Sending…";
+      const { error } = await client.auth.signInWithOtp({ email, options: { emailRedirectTo: window.location.href } });
+      $("authSendBtn").disabled = false;
+      $("authSendBtn").textContent = "Send magic link";
+      $("authStatus").textContent = error
+        ? "Couldn't send that link — check the email and try again."
+        : `Check ${email} for a sign-in link, then open it on this device.`;
+    });
+
+    $("useLocalBtn").addEventListener("click", startLocalMode);
+  }
+
+  function startLocalMode() {
+    state.backend = "local";
+    $("loadingScreen").classList.add("hidden");
+    $("authScreen").classList.add("hidden");
+    $("localBanner").classList.remove("hidden");
+    showApp();
+  }
+
+  function startSupabaseMode(client, session) {
+    state.backend = "supabase";
+    state.session = session;
+    supabaseDb.init(client, session.user.id);
+    supabaseDietProfileDb.init(client, session.user.id);
+    supabaseFoodLogDb.init(client, session.user.id);
+    $("loadingScreen").classList.add("hidden");
+    $("authScreen").classList.add("hidden");
+    $("localBanner").classList.add("hidden");
+    showApp();
+
+    // keep devices in sync: refetch on focus and periodically
+    const resync = () => { refreshTasks(); refreshDiet(); };
+    window.addEventListener("focus", resync);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) resync(); });
+    setInterval(resync, 30000);
+  }
+
+  async function showApp() {
+    $("app").classList.remove("hidden");
+    await Promise.all([refreshTasks(), refreshDiet()]);
+    checkDailyRollover();
+    state.bootDate = todayStr();
+    setInterval(() => {
+      if (todayStr() !== state.bootDate) {
+        state.bootDate = todayStr();
+        checkDailyRollover();
+      }
+    }, 60000);
+  }
+
+  boot();
+})();
+</script>
+</body>
+</html>
