@@ -40,6 +40,9 @@
          completed boolean not null default false,
          is_daily boolean not null default false,
          rollover_reviewed boolean not null default false,
+         focused_seconds integer not null default 0,
+         rested_seconds integer not null default 0,
+         completed_on date,
          created_at timestamptz not null default now()
        );
 
@@ -61,6 +64,9 @@
 
        alter table public.tasks add column if not exists is_daily boolean not null default false;
        alter table public.tasks add column if not exists rollover_reviewed boolean not null default false;
+       alter table public.tasks add column if not exists focused_seconds integer not null default 0;
+       alter table public.tasks add column if not exists rested_seconds integer not null default 0;
+       alter table public.tasks add column if not exists completed_on date;
 
   2b) CREATE THE DIET TABLES + SECURITY RULES
      - Same SQL Editor, new query, run this too (it adds two more tables:
@@ -274,7 +280,7 @@
 
     <!-- Top bar -->
     <header class="sticky top-0 z-30 bg-paper/90 backdrop-blur border-b border-line">
-      <div class="max-w-5xl mx-auto px-4 py-3 flex items-center gap-3">
+      <div class="max-w-5xl mx-auto px-4 py-3 flex flex-wrap items-center gap-x-3 gap-y-2">
         <div class="font-display text-xl tracking-tight shrink-0">Ledger</div>
 
         <!-- Schedule / Diet switcher -->
@@ -283,11 +289,11 @@
         </div>
 
         <!-- Profile switcher (schedule view only) -->
-        <div id="profileTabs" class="flex-1 flex items-center gap-1 bg-white/70 border border-line rounded-full p-1 overflow-x-auto scroll-thin">
+        <div id="profileTabs" class="order-last w-full md:order-none md:w-auto md:flex-1 flex items-center gap-1 bg-white/70 border border-line rounded-full p-1 overflow-x-auto scroll-thin">
           <!-- injected -->
         </div>
 
-        <button id="settingsBtn" title="Settings" class="shrink-0 w-9 h-9 rounded-full border border-line bg-white flex items-center justify-center hover:border-ink transition">
+        <button id="settingsBtn" title="Settings" class="ml-auto shrink-0 w-9 h-9 rounded-full border border-line bg-white flex items-center justify-center hover:border-ink transition">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
         </button>
 
@@ -300,7 +306,7 @@
       </div>
 
       <!-- Date strip -->
-      <div class="max-w-5xl mx-auto px-4 pb-3 flex items-center gap-2">
+      <div id="dateStripRow" class="max-w-5xl mx-auto px-4 pb-3 flex items-center gap-2">
         <button id="weekPrevBtn" class="shrink-0 w-7 h-7 rounded-full border border-line bg-white flex items-center justify-center hover:border-ink">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M15 18l-6-6 6-6"/></svg>
         </button>
@@ -313,7 +319,19 @@
     </header>
 
     <!-- Main -->
-    <main id="scheduleView" class="max-w-5xl mx-auto px-4 py-6 grid grid-cols-1 md:grid-cols-[280px_1fr] gap-6">
+    <main id="scheduleView" class="max-w-5xl mx-auto px-4 py-6">
+
+      <!-- Quick add: type an activity, let it parse date/time/category -->
+      <form id="quickAddForm" class="mb-5 flex items-center gap-2">
+        <input id="quickAddInput" type="text" autocomplete="off" maxlength="200"
+          placeholder="Type an activity… e.g. &quot;Submit econ assignment tomorrow 6pm&quot;"
+          class="flex-1 min-w-0 rounded-full border border-line bg-white px-4 py-2.5 text-sm focus:border-gold" />
+        <button type="submit" class="shrink-0 rounded-full bg-gold text-ink text-sm font-semibold px-4 py-2.5 hover:bg-golddeep hover:text-paper transition">
+          Parse
+        </button>
+      </form>
+
+      <div class="grid grid-cols-1 md:grid-cols-[280px_1fr] gap-6">
 
       <!-- Dial / budget card -->
       <section class="bg-card border border-line rounded-2xl p-5 h-fit">
@@ -350,6 +368,7 @@
           </div>
         </div>
       </section>
+      </div>
     </main>
 
     <!-- Diet -->
@@ -391,6 +410,117 @@
             <div class="font-display text-lg mb-1">Nothing logged yet</div>
             <p class="text-sm text-inksoft mb-4">Log a meal and it'll take its place on today's plate.</p>
             <button data-open-food class="rounded-full bg-ink text-paper text-sm font-medium px-4 py-2 hover:bg-ink/90">+ Log food</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Focus -->
+    <main id="focusView" class="hidden max-w-4xl mx-auto px-4 py-6 grid grid-cols-1 md:grid-cols-[1fr_300px] gap-6">
+
+      <!-- Today: live deep work / rest / wasted -->
+      <section class="md:col-span-2 grid grid-cols-3 gap-3">
+        <div class="bg-card border border-line rounded-2xl p-3 md:p-4">
+          <div class="flex items-center gap-1.5 text-[10px] uppercase tracking-wide font-medium text-inksoft">
+            <span class="w-2 h-2 rounded-full" style="background:#D8A63D"></span>Deep work
+          </div>
+          <div id="focusDeepTile" class="font-display text-xl md:text-3xl tabular mt-1">0:00:00</div>
+          <div id="focusDeepSub" class="text-[11px] text-inksoft mt-0.5 leading-snug"></div>
+        </div>
+        <div class="bg-card border border-line rounded-2xl p-3 md:p-4">
+          <div class="flex items-center gap-1.5 text-[10px] uppercase tracking-wide font-medium text-inksoft">
+            <span class="w-2 h-2 rounded-full" style="background:#1B9C87"></span>Rest
+          </div>
+          <div id="focusRestTile" class="font-display text-xl md:text-3xl tabular mt-1">0:00:00</div>
+          <div id="focusRestSub" class="text-[11px] text-inksoft mt-0.5 leading-snug"></div>
+        </div>
+        <div class="bg-card border border-line rounded-2xl p-3 md:p-4">
+          <div class="flex items-center gap-1.5 text-[10px] uppercase tracking-wide font-medium text-inksoft">
+            <span class="w-2 h-2 rounded-full" style="background:#C64536"></span>Wasted
+          </div>
+          <div id="focusWastedTile" class="font-display text-xl md:text-3xl tabular mt-1">0:00:00</div>
+          <div id="focusWastedSub" class="text-[11px] text-inksoft mt-0.5 leading-snug"></div>
+        </div>
+      </section>
+
+      <!-- Timer card -->
+      <section class="bg-card border border-line rounded-2xl p-5 md:p-6 flex flex-col items-center h-fit">
+        <div class="flex items-center justify-between w-full">
+          <div class="text-xs uppercase tracking-wide text-inksoft font-medium">Focus session</div>
+          <div id="focusRoundLabel" class="text-xs text-inksoft tabular"></div>
+        </div>
+
+        <div class="relative w-60 h-60 my-4">
+          <svg id="focusSvg" viewBox="0 0 220 220" class="w-full h-full"></svg>
+          <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+            <div id="focusPhaseLabel" class="text-xs uppercase tracking-wide font-semibold"></div>
+            <div id="focusTime" class="font-display text-5xl tabular leading-tight"></div>
+            <div id="focusTaskLabel" class="text-xs text-inksoft max-w-[150px] truncate"></div>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <button id="focusStartBtn" class="rounded-full bg-ink text-paper text-sm font-medium px-6 py-2.5 hover:bg-ink/90 transition min-w-[116px]">Start</button>
+          <button id="focusResetBtn" class="rounded-full border border-line bg-white text-sm font-medium px-4 py-2.5 hover:border-ink transition disabled:opacity-40 disabled:hover:border-line">Reset</button>
+          <button id="focusSkipBtn" class="rounded-full border border-line bg-white text-sm font-medium px-4 py-2.5 hover:border-ink transition disabled:opacity-40 disabled:hover:border-line">Skip</button>
+        </div>
+        <p id="focusHint" class="mt-4 text-xs text-inksoft text-center min-h-[1rem]"></p>
+      </section>
+
+      <!-- Settings + task picker -->
+      <section class="space-y-4">
+        <div class="bg-card border border-line rounded-2xl p-5">
+          <div class="text-xs uppercase tracking-wide text-inksoft font-medium mb-3">Rhythm</div>
+          <div id="focusPresets" class="grid grid-cols-3 gap-2 mb-4"></div>
+
+          <div class="grid grid-cols-3 gap-3">
+            <div>
+              <label class="block text-[10px] font-medium uppercase tracking-wide text-inksoft mb-1.5">Deep work (min)</label>
+              <input id="focusWork" type="number" min="1" max="180" inputmode="numeric" class="w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm tabular focus:border-gold disabled:opacity-50" />
+            </div>
+            <div>
+              <label class="block text-[10px] font-medium uppercase tracking-wide text-inksoft mb-1.5">Rest (min)</label>
+              <input id="focusRest" type="number" min="0" max="60" inputmode="numeric" class="w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm tabular focus:border-gold disabled:opacity-50" />
+            </div>
+            <div>
+              <label class="block text-[10px] font-medium uppercase tracking-wide text-inksoft mb-1.5">Rounds</label>
+              <input id="focusRounds" type="number" min="1" max="12" inputmode="numeric" class="w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm tabular focus:border-gold disabled:opacity-50" />
+            </div>
+          </div>
+
+          <label class="flex items-center gap-2 mt-4 text-xs text-inksoft cursor-pointer">
+            <input id="focusAutoStart" type="checkbox" class="accent-[#16211C]" />
+            Start the next phase automatically
+          </label>
+          <p id="focusSummary" class="mt-3 text-xs text-inksoft tabular"></p>
+        </div>
+
+        <div class="bg-card border border-line rounded-2xl p-5">
+          <label for="focusTaskInput" class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Working on <span class="normal-case text-inksoft/60">(optional)</span></label>
+          <div id="focusTaskWrap" class="relative">
+            <input id="focusTaskInput" type="text" autocomplete="off" maxlength="120" placeholder="Type a task, or pick from your list"
+              class="w-full rounded-lg border border-line bg-white pl-3 pr-9 py-2.5 text-sm focus:border-gold" />
+            <button id="focusTaskClear" type="button" title="Clear" class="hidden absolute right-1.5 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full hover:bg-black/5 text-inksoft text-xs">✕</button>
+            <div id="focusTaskMenu" class="hidden absolute z-20 left-0 right-0 mt-1 bg-card border border-line rounded-xl shadow-lg max-h-64 overflow-y-auto"></div>
+          </div>
+          <p id="focusTaskStatus" class="mt-2 text-xs text-inksoft leading-relaxed min-h-[1rem]"></p>
+
+          <div class="mt-4 pt-4 border-t border-line">
+            <div class="flex items-center justify-between gap-3">
+              <label for="focusDayStart" class="text-xs text-inksoft">My day starts at</label>
+              <input id="focusDayStart" type="time" class="w-28 rounded-lg border border-line bg-white px-2 py-1.5 text-sm tabular focus:border-gold" />
+            </div>
+            <p class="mt-1.5 text-[10px] text-inksoft/70 leading-relaxed">Wasted = time since then (within your 16h day) that wasn't deep work, rest, or a finished task.</p>
+
+            <div class="flex items-center justify-between text-xs mt-3">
+              <span class="text-inksoft">Sessions today</span>
+              <span id="focusSessionsStat" class="tabular font-medium"></span>
+            </div>
+            <div class="flex items-center justify-between text-xs mt-1.5 gap-3">
+              <span class="text-inksoft shrink-0">Last 7 days</span>
+              <span id="focusWeekStat" class="tabular font-medium text-right"></span>
+            </div>
+            <p class="mt-3 text-[10px] text-inksoft/70">Timer totals are saved on this device. Time on a task syncs with the task.</p>
           </div>
         </div>
       </section>
@@ -593,6 +723,20 @@
     </div>
   </div>
 
+  <!-- ===================== TOMORROW REMINDER MODAL ===================== -->
+  <div id="reminderModal" class="hidden fixed inset-0 z-40 modal-backdrop flex items-end md:items-center justify-center p-0 md:p-4">
+    <div class="bg-card w-full md:max-w-md rounded-t-2xl md:rounded-2xl border border-line max-h-[92vh] overflow-y-auto">
+      <div class="px-5 pt-5 pb-2 flex items-center justify-between">
+        <h2 class="font-display text-xl">Coming up tomorrow</h2>
+        <button data-close-modal class="w-8 h-8 rounded-full hover:bg-black/5 flex items-center justify-center">✕</button>
+      </div>
+      <div class="px-5 pb-5">
+        <div id="reminderList" class="space-y-2 mb-4"></div>
+        <button data-close-modal class="w-full rounded-lg bg-ink text-paper py-2.5 text-sm font-medium hover:bg-ink/90 transition">Got it</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ===================== SETTINGS MODAL ===================== -->
   <div id="settingsModal" class="hidden fixed inset-0 z-40 modal-backdrop flex items-end md:items-center justify-center p-0 md:p-4">
     <div class="bg-card w-full md:max-w-md rounded-t-2xl md:rounded-2xl border border-line max-h-[92vh] overflow-y-auto">
@@ -611,6 +755,15 @@
           <input id="setKey" placeholder="eyJ..." class="w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm focus:border-gold" />
         </div>
         <button id="saveSettingsBtn" class="w-full rounded-lg bg-ink text-paper py-2.5 text-sm font-medium hover:bg-ink/90 transition">Save & reconnect</button>
+
+        <div class="flex items-center justify-between gap-3 pt-3 border-t border-line">
+          <div class="min-w-0">
+            <div class="text-sm font-medium">Browser notifications</div>
+            <div class="text-xs text-inksoft leading-relaxed">A native alert for tomorrow's reminders and focus-timer phase changes, but only while this app is open in a browser — it can't wake your phone when the app is fully closed.</div>
+          </div>
+          <button id="notifToggleBtn" class="shrink-0 text-xs font-medium px-3 py-1.5 rounded-lg border border-line hover:border-ink">Enable</button>
+        </div>
+
         <div class="flex items-center justify-between pt-2 border-t border-line">
           <span class="text-xs text-inksoft" id="syncStatusLabel">—</span>
           <button id="signOutBtn" class="hidden text-xs text-danger underline">Sign out</button>
@@ -663,6 +816,24 @@
     { id: "fat", label: "Fat", color: "#8B5CF6" },
   ];
   const ACTIVITY_MULTIPLIERS = { sedentary: 1.2, light: 1.375, moderate: 1.55, active: 1.725, very_active: 1.9 };
+
+  // Quick-add parsing: keyword sets used to guess which profile a typed
+  // activity belongs to. Not exhaustive — the task form always opens
+  // afterward so the guess can be corrected before saving.
+  const STUDENT_KEYWORDS = ["assignment", "exam", "class", "lecture", "submit", "college", "university", "srcc",
+    "semester", "viva", "presentation", "internal", "notes", "study", "revise", "revision", "syllabus",
+    "commerce", "b.com", "bcom", "economics", "accountancy", "accounts", "statistics", "tutorial", "quiz", "test", "paper"];
+  const DESIGNER_KEYWORDS = ["thumbnail", "design", "client", "edit", "editing", "premiere", "after effects",
+    "photoshop", "figma", "render", "export", "motion", "reel", "showreel", "portfolio", "invoice",
+    "youtube", "graphics", "logo", "banner", "mockup", "color grade", "vfx", "animation", "video"];
+  const GAMER_KEYWORDS = ["game", "gaming", "stream", "streaming", "play", "tournament", "squad", "match",
+    "practice", "discord", "twitch", "esports", "grind", "valorant", "bgmi", "pubg", "fortnite", "csgo",
+    "cs2", "minecraft", "dota"];
+  const MONTH_NAMES = { jan: 0, january: 0, feb: 1, february: 1, mar: 2, march: 2, apr: 3, april: 3, may: 4,
+    jun: 5, june: 5, jul: 6, july: 6, aug: 7, august: 7, sep: 8, sept: 8, september: 8, oct: 9, october: 9,
+    nov: 10, november: 10, dec: 11, december: 11 };
+  const WEEKDAY_NAMES = { sunday: 0, sun: 0, monday: 1, mon: 1, tuesday: 2, tue: 2, tues: 2, wednesday: 3,
+    wed: 3, thursday: 4, thu: 4, thurs: 4, friday: 5, fri: 5, saturday: 6, sat: 6 };
 
   // Rough per-serving values for quick logging — editable before saving.
   const COMMON_FOODS = [
@@ -782,6 +953,109 @@
   }
 
   /* ------------------------------------------------------------------ */
+  /* Quick add: free-text → date / time / category parsing               */
+  /* ------------------------------------------------------------------ */
+  function startOfToday() {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }
+
+  function nextWeekday(targetDow) {
+    const d = startOfToday();
+    let delta = (targetDow - d.getDay() + 7) % 7;
+    if (delta === 0) delta = 7; // treat a bare weekday name as the *next* one, not today
+    return addDays(d, delta);
+  }
+
+  function buildMonthDayDate(day, month) {
+    const now = new Date();
+    let d = new Date(now.getFullYear(), month, day);
+    if (d < startOfToday()) d = new Date(now.getFullYear() + 1, month, day);
+    return d;
+  }
+
+  function guessProfileFromText(lower) {
+    const score = { student: 0, designer: 0, gamer: 0 };
+    STUDENT_KEYWORDS.forEach((k) => { if (lower.includes(k)) score.student++; });
+    DESIGNER_KEYWORDS.forEach((k) => { if (lower.includes(k)) score.designer++; });
+    GAMER_KEYWORDS.forEach((k) => { if (lower.includes(k)) score.gamer++; });
+    const best = Object.entries(score).sort((a, b) => b[1] - a[1])[0];
+    if (best[1] === 0) return state.activeProfile !== "all" ? state.activeProfile : "student";
+    return best[0];
+  }
+
+  function parseActivityText(raw) {
+    const text = raw.trim();
+    const lower = text.toLowerCase();
+    let dateObj = null, m;
+
+    if (/\btoday\b/.test(lower) || /\btonight\b/.test(lower)) {
+      dateObj = new Date();
+    } else if (/\btomorrow\b/.test(lower)) {
+      dateObj = addDays(new Date(), 1);
+    } else if ((m = lower.match(/\b(?:next\s+)?(sunday|sun|monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thurs|friday|fri|saturday|sat)\b/))) {
+      dateObj = nextWeekday(WEEKDAY_NAMES[m[1]]);
+    } else if ((m = lower.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*/))) {
+      dateObj = buildMonthDayDate(Number(m[1]), MONTH_NAMES[m[2]]);
+    } else if ((m = lower.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+(\d{1,2})(?:st|nd|rd|th)?\b/))) {
+      dateObj = buildMonthDayDate(Number(m[2]), MONTH_NAMES[m[1]]);
+    } else if ((m = lower.match(/\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?\b/))) {
+      const day = Number(m[1]), month = Number(m[2]) - 1;
+      let year = m[3] ? Number(m[3]) : new Date().getFullYear();
+      if (year < 100) year += 2000;
+      dateObj = new Date(year, month, day);
+      if (!m[3] && dateObj < startOfToday()) dateObj = new Date(year + 1, month, day);
+    }
+    const dateWasGuessed = !dateObj;
+    if (!dateObj) dateObj = new Date();
+
+    let timeStr = null;
+    if (/\bnoon\b/.test(lower)) timeStr = "12:00";
+    else if (/\bmidnight\b/.test(lower)) timeStr = "00:00";
+    else if ((m = lower.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/))) {
+      let h = Number(m[1]) % 12;
+      if (m[3] === "pm") h += 12;
+      timeStr = `${pad2(h)}:${pad2(m[2] ? Number(m[2]) : 0)}`;
+    } else if ((m = lower.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/))) {
+      timeStr = `${pad2(Number(m[1]))}:${m[2]}`;
+    }
+
+    let estimated_minutes = 30;
+    if ((m = lower.match(/\bfor\s+(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h)\b/))) {
+      estimated_minutes = Math.round(Number(m[1]) * 60);
+    } else if ((m = lower.match(/\bfor\s+(\d+)\s*(?:minutes?|mins?|m)\b/))) {
+      estimated_minutes = Number(m[1]);
+    }
+
+    let title = text
+      .replace(/\btoday\b/gi, "")
+      .replace(/\btonight\b/gi, "")
+      .replace(/\btomorrow\b/gi, "")
+      .replace(/\b(?:next\s+)?(?:sunday|sun|monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thurs|friday|fri|saturday|sat)\b/gi, "")
+      .replace(/\b\d{1,2}(?:st|nd|rd|th)?\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*/gi, "")
+      .replace(/\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+\d{1,2}(?:st|nd|rd|th)?\b/gi, "")
+      .replace(/\b\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?\b/gi, "")
+      .replace(/\bnoon\b/gi, "")
+      .replace(/\bmidnight\b/gi, "")
+      .replace(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/gi, "")
+      .replace(/\b(?:[01]?\d|2[0-3]):[0-5]\d\b/gi, "")
+      .replace(/\bfor\s+\d+(?:\.\d+)?\s*(?:hours?|hrs?|h|minutes?|mins?|m)\b/gi, "")
+      .replace(/\b(?:on|by|at|due|next)\b/gi, "")
+      .replace(/\s{2,}/g, " ")
+      .replace(/^[\s,.\-]+|[\s,.\-]+$/g, "")
+      .trim();
+    if (!title) title = text.trim();
+    title = title.charAt(0).toUpperCase() + title.slice(1);
+
+    const profile = guessProfileFromText(lower);
+    const scheduled_date = toDateStr(dateObj);
+    const deadline = timeStr ? new Date(`${scheduled_date}T${timeStr}:00`).toISOString() : null;
+
+    return { title, profile, scheduled_date, deadline, estimated_minutes, dateWasGuessed };
+  }
+
+  /* ------------------------------------------------------------------ */
   /* State                                                               */
   /* ------------------------------------------------------------------ */
   const state = {
@@ -804,6 +1078,8 @@
     ffMeal: "snack",
     ffBase: null,
     fDaily: false,
+    notificationsEnabled: localStorage.getItem("ledger:notificationsEnabled") === "true",
+    writeSeq: 0,             // bumped around focus-time saves so stale task refreshes are discarded
   };
 
   /* ------------------------------------------------------------------ */
@@ -896,7 +1172,15 @@
       return data;
     },
     async update(id, patch) {
-      const { data, error } = await this.client.from("tasks").update(patch).eq("id", id).select().single();
+      let { data, error } = await this.client.from("tasks").update(patch).eq("id", id).select().single();
+      if (error && /focused_seconds|rested_seconds|completed_on/.test(error.message || "")) {
+        // the focus-time columns haven't been added in Supabase yet: still save everything else
+        toast("Run the new SQL step in Supabase to save focus time (see the setup notes).");
+        const slim = { ...patch };
+        delete slim.focused_seconds; delete slim.rested_seconds; delete slim.completed_on;
+        if (!Object.keys(slim).length) return null;
+        ({ data, error } = await this.client.from("tasks").update(slim).eq("id", id).select().single());
+      }
       if (error) { console.error(error); toast("Couldn't update that task."); return null; }
       return data;
     },
@@ -948,7 +1232,10 @@
   function foodLogDb() { return state.backend === "supabase" ? supabaseFoodLogDb : localFoodLogDb; }
 
   async function refreshTasks() {
-    state.tasks = await db().list();
+    const seq = state.writeSeq;
+    const list = await db().list();
+    if (seq !== state.writeSeq) return; // a focus-time save started or finished meanwhile: this read may be stale
+    state.tasks = list;
     renderAll();
   }
 
@@ -1150,6 +1437,15 @@
   /* ------------------------------------------------------------------ */
   /* Rendering: task list                                                 */
   /* ------------------------------------------------------------------ */
+  function focusInfoHtml(t) {
+    if (t.completed) return "";
+    const used = taskUsedSec(t);
+    if (used < 60) return "";
+    const leftMin = Math.ceil((t.estimated_minutes * 60 - used) / 60);
+    return `<span class="font-medium" style="color:#1B9C87">${leftMin > 0 ? `${fmtHM(leftMin)} left` : `over by ${fmtHM(-leftMin)}`}</span>` +
+      `<span class="text-inksoft/70">(${fmtHM(Math.floor(used / 60))} tracked)</span>`;
+  }
+
   function taskRowHtml(t) {
     const p = profileById[t.profile];
     const status = deadlineStatus(t);
@@ -1171,6 +1467,7 @@
           <div class="mt-1 flex items-center gap-2 text-xs text-inksoft flex-wrap">
             <span class="tabular">${escapeHtml(t.scheduled_date)}</span>
             <span class="tabular">${fmtHM(mins)}${t.completed && t.actual_minutes != null && t.actual_minutes !== t.estimated_minutes ? ` <span class="text-inksoft/60">(est ${fmtHM(t.estimated_minutes)})</span>` : ""}</span>
+            ${focusInfoHtml(t)}
             ${status ? `<span class="font-medium ${toneClass}">${status.label}</span>` : ""}
           </div>
         </div>
@@ -1212,13 +1509,14 @@
     renderDial();
     renderTaskList();
     if (state.view === "diet") renderDietAll();
+    if (state.view === "focus") { renderFocusTaskPicker(); renderFocusStats(); }
   }
 
   /* ------------------------------------------------------------------ */
   /* View switcher (Schedule / Diet)                                     */
   /* ------------------------------------------------------------------ */
   function renderViewTabs() {
-    const tabs = [{ id: "schedule", label: "Schedule" }, { id: "diet", label: "Diet" }];
+    const tabs = [{ id: "schedule", label: "Schedule" }, { id: "diet", label: "Diet" }, { id: "focus", label: "Focus" }];
     $("viewTabs").innerHTML = tabs.map((v) => `
       <button data-view-tab="${v.id}" class="px-3 py-1.5 rounded-full text-xs font-medium transition whitespace-nowrap ${state.view === v.id ? "bg-ink text-paper" : "text-inksoft hover:text-ink"}">
         ${v.label}
@@ -1232,6 +1530,8 @@
     state.view = view;
     $("scheduleView").classList.toggle("hidden", view !== "schedule");
     $("dietView").classList.toggle("hidden", view !== "diet");
+    $("focusView").classList.toggle("hidden", view !== "focus");
+    $("dateStripRow").classList.toggle("hidden", view === "focus");
     $("profileTabs").classList.toggle("hidden", view !== "schedule");
     $("addTaskBtn").classList.toggle("hidden", view !== "schedule");
     $("addFoodBtn").classList.toggle("hidden", view !== "diet");
@@ -1240,6 +1540,7 @@
       renderDietAll();
       if (!state.dietProfile && !state.dietLoadFailed) openDietProfileModal();
     }
+    if (view === "focus") renderFocusAll();
   }
 
   /* ------------------------------------------------------------------ */
@@ -1377,12 +1678,15 @@
     if (!t) return;
     if (t.completed) {
       // revert to incomplete
-      updateTaskLocal(id, { completed: false, actual_minutes: null });
+      updateTaskLocal(id, { completed: false, actual_minutes: null, completed_on: null });
       return;
     }
     state.completingTaskId = id;
-    $("completeTaskTitle").textContent = t.title;
-    const est = t.estimated_minutes;
+    const trackedSec = taskUsedSec(t);
+    $("completeTaskTitle").textContent = trackedSec >= 60
+      ? `${t.title} — ${fmtHM(Math.round(trackedSec / 60))} tracked by the focus timer`
+      : t.title;
+    const est = trackedSec >= 60 ? Math.max(1, Math.round(trackedSec / 60)) : t.estimated_minutes;
     $("cActHours").value = Math.floor(est / 60);
     $("cActMinutes").value = est % 60;
     updateCompleteDelta();
@@ -1419,7 +1723,7 @@
 
   function renderRolloverList() {
     const list = rolloverCandidates();
-    if (list.length === 0) { closeModal("rolloverModal"); return; }
+    if (list.length === 0) { closeModal("rolloverModal"); checkTomorrowReminders(); return; }
 
     $("rolloverList").innerHTML = list.map((t) => `
       <div class="flex items-center justify-between gap-2 border border-line rounded-lg px-3 py-2.5">
@@ -1451,9 +1755,47 @@
   }
 
   function checkDailyRollover() {
-    if (rolloverCandidates().length === 0) return;
+    if (rolloverCandidates().length === 0) { checkTomorrowReminders(); return; }
     renderRolloverList();
     openModal("rolloverModal");
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Reminder: a day before                                              */
+  /* ------------------------------------------------------------------ */
+  function reminderCandidates() {
+    const tmrw = toDateStr(addDays(new Date(), 1));
+    return state.tasks.filter((t) => !t.completed && (
+      (t.deadline && toDateStr(new Date(t.deadline)) === tmrw) ||
+      (!t.deadline && t.scheduled_date === tmrw)
+    ));
+  }
+
+  function renderReminderList() {
+    const list = reminderCandidates();
+    $("reminderList").innerHTML = list.map((t) => `
+      <div class="flex items-center justify-between gap-2 border border-line rounded-lg px-3 py-2.5">
+        <div class="min-w-0">
+          <div class="text-sm font-medium truncate">${escapeHtml(t.title)}</div>
+          <div class="text-xs text-inksoft tabular">${t.deadline ? new Date(t.deadline).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : "Tomorrow"} · ${profileById[t.profile].label}</div>
+        </div>
+      </div>`).join("");
+  }
+
+  function checkTomorrowReminders() {
+    const list = reminderCandidates();
+    if (list.length === 0) return;
+    renderReminderList();
+    openModal("reminderModal");
+    if (state.notificationsEnabled && "Notification" in window && Notification.permission === "granted") {
+      list.forEach((t) => {
+        try {
+          new Notification("Due tomorrow: " + t.title, {
+            body: t.deadline ? ("At " + new Date(t.deadline).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })) : undefined,
+          });
+        } catch (err) { console.error(err); }
+      });
+    }
   }
 
   /* ------------------------------------------------------------------ */
@@ -1486,21 +1828,27 @@
     if ($("fDeadline").value && state.fDaily) setDailyToggle(false);
   });
 
-  function openTaskModal(taskId) {
+  function openTaskModal(taskId, prefill) {
     state.editingTaskId = taskId || null;
     const t = taskId ? state.tasks.find((x) => x.id === taskId) : null;
+    const p = !t && prefill ? prefill : null;
 
     $("taskModalTitle").textContent = t ? "Edit task" : "New task";
     $("deleteTaskBtn").classList.toggle("hidden", !t);
     $("fEstWarning").classList.add("hidden");
 
-    $("fTitle").value = t ? t.title : "";
-    renderProfileChips(t ? t.profile : (state.activeProfile !== "all" ? state.activeProfile : "student"));
-    $("fScheduledDate").value = t ? t.scheduled_date : state.selectedDate;
-    $("fDeadline").value = t && t.deadline ? toLocalInputValue(t.deadline) : "";
-    $("fEstHours").value = t ? Math.floor(t.estimated_minutes / 60) : 1;
-    $("fEstMinutes").value = t ? t.estimated_minutes % 60 : 0;
+    $("fTitle").value = t ? t.title : (p ? p.title : "");
+    renderProfileChips(t ? t.profile : (p ? p.profile : (state.activeProfile !== "all" ? state.activeProfile : "student")));
+    $("fScheduledDate").value = t ? t.scheduled_date : (p ? p.scheduled_date : state.selectedDate);
+    $("fDeadline").value = t && t.deadline ? toLocalInputValue(t.deadline) : (p && p.deadline ? toLocalInputValue(p.deadline) : "");
+    $("fEstHours").value = t ? Math.floor(t.estimated_minutes / 60) : (p ? Math.floor(p.estimated_minutes / 60) : 1);
+    $("fEstMinutes").value = t ? t.estimated_minutes % 60 : (p ? p.estimated_minutes % 60 : 0);
     setDailyToggle(t ? !!t.is_daily : false);
+
+    if (p && p.dateWasGuessed) {
+      $("fEstWarning").textContent = "Couldn't spot a date in that — defaulted to today. Check it before saving.";
+      $("fEstWarning").classList.remove("hidden");
+    }
 
     openModal("taskModal");
   }
@@ -1565,7 +1913,15 @@
     const id = state.completingTaskId;
     if (!id) return;
     const actual_minutes = (Number($("cActHours").value) || 0) * 60 + (Number($("cActMinutes").value) || 0);
-    await updateTaskLocal(id, { completed: true, actual_minutes });
+    if (focus.taskId === id) {
+      // bank the time so far, then stop tracking a task that is now finished
+      creditElapsed();
+      await flushTail;
+      focus.taskId = null;
+      focus.label = "";
+      saveFocus();
+    }
+    await updateTaskLocal(id, { completed: true, actual_minutes, completed_on: todayStr() });
     closeModal("completeModal");
     toast("Task completed — budget updated.");
   });
@@ -1668,6 +2024,15 @@
   document.querySelectorAll("[data-open-add]").forEach((btn) => btn.addEventListener("click", () => openTaskModal(null)));
 
   $("addTaskBtn").addEventListener("click", () => openTaskModal(null));
+
+  $("quickAddForm").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const raw = $("quickAddInput").value.trim();
+    if (!raw) return;
+    const parsed = parseActivityText(raw);
+    $("quickAddInput").value = "";
+    openTaskModal(null, parsed);
+  });
   $("weekPrevBtn").addEventListener("click", () => { state.weekStart = addDays(state.weekStart, -7); renderAll(); });
   $("weekNextBtn").addEventListener("click", () => { state.weekStart = addDays(state.weekStart, 7); renderAll(); });
   $("todayBtn").addEventListener("click", () => {
@@ -1682,6 +2047,19 @@
   /* ------------------------------------------------------------------ */
   $("settingsBtn").addEventListener("click", openSettings);
   $("openSetupFromBanner").addEventListener("click", openSettings);
+  function updateNotifBtn() {
+    const on = "Notification" in window && Notification.permission === "granted" && state.notificationsEnabled;
+    $("notifToggleBtn").textContent = on ? "Enabled" : "Enable";
+  }
+  $("notifToggleBtn").addEventListener("click", async () => {
+    if (!("Notification" in window)) { toast("Notifications aren't supported in this browser."); return; }
+    const perm = await Notification.requestPermission();
+    state.notificationsEnabled = perm === "granted";
+    localStorage.setItem("ledger:notificationsEnabled", String(state.notificationsEnabled));
+    toast(state.notificationsEnabled ? "Notifications enabled." : "Permission not granted.");
+    updateNotifBtn();
+  });
+
   function openSettings() {
     const cfg = getSupabaseConfig();
     $("setUrl").value = cfg.url.includes("YOUR_") ? "" : cfg.url;
@@ -1690,6 +2068,7 @@
       ? `Signed in as ${state.session?.user?.email || "unknown"}`
       : "Local-only mode — not syncing";
     $("signOutBtn").classList.toggle("hidden", state.backend !== "supabase");
+    updateNotifBtn();
     openModal("settingsModal");
   }
   $("saveSettingsBtn").addEventListener("click", () => {
@@ -1704,6 +2083,659 @@
     if (state.supabase) await state.supabase.auth.signOut();
     location.reload();
   });
+
+  /* ------------------------------------------------------------------ */
+  /* Focus timer (pomodoro)                                              */
+  /* ------------------------------------------------------------------ */
+  const FOCUS_KEY = "ledger:focusState";
+  const FOCUS_LOG_KEY = "ledger:focusLog";
+  const DAY_START_KEY = "ledger:dayStart";
+  const BASE_TITLE = document.title;
+  const FOCUS_PRESETS = [
+    { label: "1 hour", sub: "50 + 10", work: 50, rest: 10 },
+    { label: "30 min", sub: "25 + 5", work: 25, rest: 5 },
+    { label: "90 min", sub: "75 + 15", work: 75, rest: 15 },
+  ];
+  const FOCUS_LABELS = { idle: "Ready", work: "Deep work", rest: "Rest", done: "Complete" };
+
+  // The timer runs off an absolute end timestamp (not a decrementing counter),
+  // so it stays accurate even when the browser throttles a background tab.
+  const focus = {
+    work: 50, rest: 10, rounds: 1, autoStart: true,
+    phase: "idle",        // 'idle' | 'work' | 'rest' | 'done'
+    round: 1,
+    running: false,
+    endsAt: null,         // ms timestamp while running
+    remainingMs: 0,       // ms left while paused
+    credited: 0,          // ms of the current phase already added to the totals
+    taskId: null,         // linked task (its time is reduced as you focus)
+    label: "",            // free-text "working on" when no task is linked
+  };
+  let focusTicker = null;
+  let audioCtx = null;
+
+  const clampInt = (v, lo, hi, fallback) => {
+    const n = Math.round(Number(v));
+    return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : fallback;
+  };
+  const phaseMs = (phase) => (phase === "rest" ? focus.rest : focus.work) * 60000;
+  const fmtClock = (ms) => {
+    const s = Math.ceil(ms / 1000);
+    return `${pad2(Math.floor(s / 60))}:${pad2(s % 60)}`;
+  };
+  const fmtHMS = (sec) => {
+    const s = Math.max(0, Math.floor(sec));
+    return `${Math.floor(s / 3600)}:${pad2(Math.floor((s % 3600) / 60))}:${pad2(s % 60)}`;
+  };
+
+  function saveFocus() {
+    try { localStorage.setItem(FOCUS_KEY, JSON.stringify(focus)); } catch {}
+  }
+
+  function loadFocus() {
+    try {
+      const s = JSON.parse(localStorage.getItem(FOCUS_KEY) || "null");
+      if (!s) return;
+      focus.work = clampInt(s.work, 1, 180, 50);
+      focus.rest = clampInt(s.rest, 0, 60, 10);
+      focus.rounds = clampInt(s.rounds, 1, 12, 1);
+      focus.autoStart = s.autoStart !== false;
+      focus.taskId = s.taskId || null;
+      focus.label = typeof s.label === "string" ? s.label : "";
+      if (["work", "rest", "done"].includes(s.phase)) {
+        focus.phase = s.phase;
+        focus.round = clampInt(s.round, 1, focus.rounds, 1);
+        focus.running = !!s.running && Number.isFinite(s.endsAt);
+        focus.endsAt = focus.running ? s.endsAt : null;
+        focus.remainingMs = Math.max(0, Number(s.remainingMs) || 0);
+        focus.credited = Math.max(0, Number(s.credited) || 0);
+        if (!focus.running && focus.phase !== "done" && !focus.remainingMs) focus.remainingMs = phaseMs(focus.phase);
+      }
+    } catch {}
+  }
+
+  /* ---- per-device log of timer time ---- */
+  function readFocusLog() {
+    try { return JSON.parse(localStorage.getItem(FOCUS_LOG_KEY) || "{}"); } catch { return {}; }
+  }
+  function writeFocusLog(log) {
+    try { localStorage.setItem(FOCUS_LOG_KEY, JSON.stringify(log)); } catch {}
+  }
+  // normalises entries (older versions stored { minutes, sessions })
+  function logEntry(log, k) {
+    const e = log[k] || {};
+    return {
+      workSec: e.workSec != null ? e.workSec : Math.round((e.minutes || 0) * 60),
+      restSec: e.restSec || 0,
+      sessions: e.sessions || 0,
+    };
+  }
+  function addFocusLog(kind, sec) {
+    const log = readFocusLog();
+    const k = todayStr();
+    const e = logEntry(log, k);
+    if (kind === "work") e.workSec += sec; else e.restSec += sec;
+    log[k] = e;
+    writeFocusLog(log);
+  }
+  function bumpSessions() {
+    const log = readFocusLog();
+    const k = todayStr();
+    const e = logEntry(log, k);
+    e.sessions += 1;
+    log[k] = e;
+    writeFocusLog(log);
+  }
+
+  /* ---- time credited to a task (synced with the task) ---- */
+  // pendingCredit holds seconds not yet confirmed saved, so the UI can
+  // reflect them immediately and a failed save can be retried.
+  const pendingCredit = {};
+  let flushTail = Promise.resolve(); // focus-time saves run one at a time
+  const taskWorkSec = (t) => (t.focused_seconds || 0) + ((pendingCredit[t.id] || {}).work || 0);
+  const taskRestSec = (t) => (t.rested_seconds || 0) + ((pendingCredit[t.id] || {}).rest || 0);
+  const taskUsedSec = (t) => taskWorkSec(t) + taskRestSec(t);
+  const linkedTask = () => (focus.taskId ? state.tasks.find((t) => t.id === focus.taskId && !t.completed) || null : null);
+
+  function creditTask(id, kind, sec) {
+    const p = pendingCredit[id] || (pendingCredit[id] = { work: 0, rest: 0 });
+    p[kind] += sec;
+    flushTaskCredit(id);
+    renderAll();
+  }
+
+  function flushTaskCredit(id) {
+    flushTail = flushTail.then(async () => {
+      const p = pendingCredit[id];
+      const t = state.tasks.find((x) => x.id === id);
+      if (!p || !t || (!p.work && !p.rest)) return;
+      const take = { work: p.work, rest: p.rest };
+      pendingCredit[id] = { work: 0, rest: 0 };
+      state.writeSeq++;
+      const updated = await db().update(id, {
+        focused_seconds: (t.focused_seconds || 0) + take.work,
+        rested_seconds: (t.rested_seconds || 0) + take.rest,
+      });
+      state.writeSeq++; // discard any task refresh that was in flight while this saved
+      const row = state.tasks.find((x) => x.id === id);
+      if (updated && updated.focused_seconds != null && row) {
+        row.focused_seconds = updated.focused_seconds;
+        row.rested_seconds = updated.rested_seconds;
+      } else {
+        // not saved (offline or columns missing): keep it for display and retry on the next credit
+        pendingCredit[id].work += take.work;
+        pendingCredit[id].rest += take.rest;
+      }
+      renderAll();
+    }).catch((err) => console.error(err));
+  }
+
+  function flushAllPendingCredits() {
+    Object.keys(pendingCredit).forEach((id) => {
+      const p = pendingCredit[id];
+      if (p && (p.work || p.rest)) flushTaskCredit(id);
+    });
+  }
+
+  /* ---- crediting the running timer ---- */
+  function focusRemainingMs() {
+    if (focus.running) return Math.max(0, focus.endsAt - Date.now());
+    if (focus.phase === "idle") return focus.work * 60000;
+    if (focus.phase === "done") return 0;
+    return focus.remainingMs;
+  }
+
+  // Adds the part of the current phase not yet counted to today's totals
+  // (and to the linked task). Called at every boundary: pause, skip, reset,
+  // phase completion and when the linked task changes.
+  function creditTo(elapsedMs, taskId = focus.taskId) {
+    const deltaSec = Math.round((elapsedMs - focus.credited) / 1000);
+    if (deltaSec <= 0) return;
+    focus.credited += deltaSec * 1000;
+    const kind = focus.phase === "work" ? "work" : "rest";
+    addFocusLog(kind, deltaSec);
+    if (taskId) creditTask(taskId, kind, deltaSec);
+  }
+  function creditElapsed(taskId = focus.taskId) {
+    if (focus.phase !== "work" && focus.phase !== "rest") return;
+    const total = phaseMs(focus.phase);
+    creditTo(Math.min(total, Math.max(0, total - focusRemainingMs())), taskId);
+  }
+  // seconds of the in-progress phase that haven't been credited yet (for live display)
+  function liveUncredited() {
+    if (focus.phase !== "work" && focus.phase !== "rest") return { kind: null, sec: 0 };
+    const total = phaseMs(focus.phase);
+    const elapsed = Math.min(total, Math.max(0, total - focusRemainingMs()));
+    return { kind: focus.phase, sec: Math.max(0, (elapsed - focus.credited) / 1000) };
+  }
+
+  /* ---- today's totals: timer + finished tasks ---- */
+  // Finished tasks that weren't timed are split with the same ratio as the
+  // pomodoro rhythm (e.g. 1h task at 50/10 → 50m deep work + 10m rest).
+  function manualRatio() { return focus.rest > 0 ? focus.work / (focus.work + focus.rest) : 1; }
+
+  function dayTotals(dateStr) {
+    const e = logEntry(readFocusLog(), dateStr);
+    let work = e.workSec, rest = e.restSec;
+    const ratio = manualRatio();
+    for (const t of state.tasks) {
+      if (!t.completed || (t.completed_on || t.scheduled_date) !== dateStr) continue;
+      const total = (t.actual_minutes != null ? t.actual_minutes : t.estimated_minutes) * 60;
+      const untimed = Math.max(0, total - taskUsedSec(t)); // timed part is already in the log
+      work += untimed * ratio;
+      rest += untimed * (1 - ratio);
+    }
+    return { work, rest, sessions: e.sessions };
+  }
+
+  function getDayStart() {
+    const v = localStorage.getItem(DAY_START_KEY);
+    return /^\d{2}:\d{2}$/.test(v || "") ? v : "07:00";
+  }
+  // seconds of today's 16-hour window that have passed (window ends by midnight at the latest)
+  function windowElapsedSec() {
+    const [h, m] = getDayStart().split(":").map(Number);
+    const now = new Date(Date.now());
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0, 0).getTime();
+    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime();
+    const end = Math.min(start + DAY_MINUTES * 60000, midnight);
+    return Math.max(0, (Math.min(now.getTime(), end) - start) / 1000);
+  }
+
+  function renderFocusStats() {
+    const today = todayStr();
+    const tot = dayTotals(today);
+    const live = liveUncredited();
+    const work = tot.work + (live.kind === "work" ? live.sec : 0);
+    const rest = tot.rest + (live.kind === "rest" ? live.sec : 0);
+    const elapsed = windowElapsedSec();
+    const wasted = Math.max(0, elapsed - work - rest);
+
+    $("focusDeepTile").textContent = fmtHMS(work);
+    $("focusRestTile").textContent = fmtHMS(rest);
+    $("focusWastedTile").textContent = fmtHMS(wasted);
+    $("focusDeepSub").textContent = live.kind === "work" ? "running now" : "timer + finished tasks";
+    $("focusRestSub").textContent = live.kind === "rest" ? "resting now" : "timer + finished tasks";
+    $("focusWastedSub").textContent = elapsed === 0
+      ? `day starts ${getDayStart()}`
+      : `of ${fmtHM(Math.round(elapsed / 60))} since ${getDayStart()}`;
+    $("focusSessionsStat").textContent = tot.sessions ? String(tot.sessions) : "—";
+
+    let w7 = 0, r7 = 0;
+    for (let i = 0; i < 7; i++) {
+      const d = dayTotals(toDateStr(addDays(new Date(Date.now()), -i)));
+      w7 += d.work; r7 += d.rest;
+    }
+    w7 += live.kind === "work" ? live.sec : 0;
+    r7 += live.kind === "rest" ? live.sec : 0;
+    $("focusWeekStat").textContent = (w7 || r7) ? `${fmtHM(Math.round(w7 / 60))} deep · ${fmtHM(Math.round(r7 / 60))} rest` : "—";
+  }
+
+  /* ---- sound / alerts ---- */
+  function ensureAudio() {
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === "suspended") audioCtx.resume();
+    } catch {}
+  }
+  function beep(times) {
+    if (!audioCtx) return;
+    const t0 = audioCtx.currentTime;
+    for (let i = 0; i < times; i++) {
+      const start = t0 + i * 0.32;
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = i % 2 ? 660 : 880;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.25, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.26);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start(start);
+      osc.stop(start + 0.3);
+    }
+  }
+  document.addEventListener("pointerdown", ensureAudio, { once: true });
+
+  function focusAlert() {
+    let msg;
+    if (focus.phase === "rest") msg = `Deep work done — rest for ${focus.rest} min.`;
+    else if (focus.phase === "work") msg = `Rest over — round ${focus.round} of ${focus.rounds}, back to deep work.`;
+    else msg = "Session complete — nice work.";
+    if (!focus.running && focus.phase !== "done") msg += " Press Start when ready.";
+    toast(msg);
+    beep(focus.phase === "done" ? 3 : 2);
+    if (navigator.vibrate) { try { navigator.vibrate([200, 100, 200]); } catch {} }
+    if (state.notificationsEnabled && "Notification" in window && Notification.permission === "granted") {
+      try { new Notification("Ledger focus", { body: msg }); } catch {}
+    }
+  }
+
+  /* ---- state machine ---- */
+  // Moves to the next phase. `completed` is true when the phase ran its full
+  // length. Either way the time actually spent is credited first.
+  function nextFocusPhase(completed) {
+    if (focus.phase === "work" || focus.phase === "rest") {
+      if (completed) creditTo(phaseMs(focus.phase)); else creditElapsed();
+      if (completed && focus.phase === "work") bumpSessions();
+    }
+    focus.credited = 0;
+    if (focus.phase === "work" && focus.rest > 0) { focus.phase = "rest"; return; }
+    if (focus.round >= focus.rounds) { focus.phase = "done"; return; }
+    focus.round += 1;
+    focus.phase = "work";
+  }
+
+  function startFocusTicker() { if (!focusTicker) focusTicker = setInterval(tickFocus, 250); }
+  function stopFocusTicker() { clearInterval(focusTicker); focusTicker = null; }
+
+  function tickFocus() {
+    if (!focus.running) return;
+    let transitioned = false, guard = 0;
+    // loop so a long absence (tab asleep) catches up through several phases
+    while (focus.running && Date.now() >= focus.endsAt && guard++ < 100) {
+      const prevEnd = focus.endsAt;
+      nextFocusPhase(true);
+      transitioned = true;
+      if (focus.phase === "done") {
+        focus.running = false; focus.endsAt = null; focus.remainingMs = 0;
+      } else if (focus.autoStart) {
+        focus.remainingMs = phaseMs(focus.phase);
+        focus.endsAt = prevEnd + focus.remainingMs;
+      } else {
+        focus.running = false; focus.endsAt = null; focus.remainingMs = phaseMs(focus.phase);
+      }
+    }
+    if (transitioned) {
+      saveFocus();
+      focusAlert();
+      renderFocusControls();
+    }
+    renderFocusTimer();
+    if (!focus.running) stopFocusTicker();
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) return;
+    tickFocus();
+    if (state.view === "focus") renderFocusStats();
+  });
+
+  function startFocus() {
+    ensureAudio();
+    if (focus.running) return;
+    if (focus.phase === "idle" || focus.phase === "done") {
+      focus.phase = "work";
+      focus.round = 1;
+      focus.credited = 0;
+      focus.remainingMs = focus.work * 60000;
+    }
+    focus.running = true;
+    focus.endsAt = Date.now() + focus.remainingMs;
+    saveFocus();
+    startFocusTicker();
+    renderFocusControls();
+    renderFocusTimer();
+  }
+
+  function pauseFocus() {
+    if (!focus.running) return;
+    creditElapsed();
+    focus.remainingMs = Math.max(0, focus.endsAt - Date.now());
+    focus.running = false;
+    focus.endsAt = null;
+    stopFocusTicker();
+    saveFocus();
+    renderFocusControls();
+    renderFocusTimer();
+  }
+
+  function resetFocus() {
+    creditElapsed();
+    stopFocusTicker();
+    focus.phase = "idle";
+    focus.round = 1;
+    focus.running = false;
+    focus.endsAt = null;
+    focus.remainingMs = 0;
+    focus.credited = 0;
+    saveFocus();
+    renderFocusControls();
+    renderFocusTimer();
+  }
+
+  function skipFocus() {
+    if (focus.phase !== "work" && focus.phase !== "rest") return;
+    const wasRunning = focus.running;
+    nextFocusPhase(false);
+    focus.remainingMs = focus.phase === "done" ? 0 : phaseMs(focus.phase);
+    focus.running = wasRunning && focus.phase !== "done";
+    focus.endsAt = focus.running ? Date.now() + focus.remainingMs : null;
+    if (!focus.running) stopFocusTicker();
+    saveFocus();
+    renderFocusControls();
+    renderFocusTimer();
+  }
+
+  /* ---- rendering ---- */
+  function renderFocusTimer() {
+    const remaining = focusRemainingMs();
+    const total = (focus.phase === "rest" ? focus.rest : focus.work) * 60000;
+    let progress = 0;
+    if (focus.phase === "done") progress = 1;
+    else if (focus.phase !== "idle" && total > 0) progress = Math.min(1, Math.max(0, 1 - remaining / total));
+    const resting = focus.phase === "rest" || focus.phase === "done";
+    const color = resting ? "#1B9C87" : "#D8A63D";
+
+    const cx = 110, cy = 110, r = 88, track = 14;
+    let svg = "";
+    for (let i = 0; i < 12; i++) {
+      const p1 = polar(cx, cy, r + track / 2 + 3, i * 30);
+      const p2 = polar(cx, cy, r + track / 2 + 8, i * 30);
+      svg += `<line x1="${p1.x}" y1="${p1.y}" x2="${p2.x}" y2="${p2.y}" stroke="#CDD6CE" stroke-width="1.5"/>`;
+    }
+    svg += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#E4E9E4" stroke-width="${track}"/>`;
+    const deg = progress * 360;
+    if (deg > 0.5) svg += `<path d="${arcPath(cx, cy, r, 0, deg)}" fill="none" stroke="${color}" stroke-width="${track}" stroke-linecap="round"/>`;
+    $("focusSvg").innerHTML = svg;
+
+    $("focusTime").textContent = focus.phase === "done" ? "Done" : fmtClock(remaining);
+    $("focusPhaseLabel").textContent = FOCUS_LABELS[focus.phase];
+    $("focusPhaseLabel").style.color = resting ? "#1B9C87" : focus.phase === "work" ? "#B9852A" : "#55655C";
+
+    if (focus.phase === "idle") $("focusRoundLabel").textContent = `${focus.rounds} round${focus.rounds === 1 ? "" : "s"}`;
+    else if (focus.phase === "done") $("focusRoundLabel").textContent = "All rounds done";
+    else $("focusRoundLabel").textContent = `Round ${focus.round} of ${focus.rounds}`;
+
+    const t = linkedTask();
+    $("focusTaskLabel").textContent = t ? t.title : focus.label;
+    renderFocusTaskStatus(t);
+
+    document.title = focus.running ? `${fmtClock(remaining)} · ${FOCUS_LABELS[focus.phase]} — Ledger` : BASE_TITLE;
+  }
+
+  // live "time left" for the linked task, counting the phase in progress
+  function renderFocusTaskStatus(t) {
+    const el = $("focusTaskStatus");
+    if (t) {
+      const usedSec = taskUsedSec(t) + liveUncredited().sec;
+      const leftMin = Math.ceil((t.estimated_minutes * 60 - usedSec) / 60);
+      el.textContent = leftMin > 0
+        ? `${fmtHM(leftMin)} left of ${fmtHM(t.estimated_minutes)} · ${fmtHM(Math.floor(usedSec / 60))} tracked`
+        : `Over its ${fmtHM(t.estimated_minutes)} by ${fmtHM(-leftMin)}`;
+    } else if (focus.label.trim()) {
+      el.textContent = "Not linked to a task — pick one from the list to count your focus against it.";
+    } else {
+      el.textContent = "Focus time is subtracted from the task you pick.";
+    }
+  }
+
+  function renderFocusSummary() {
+    const total = (focus.work + focus.rest) * focus.rounds;
+    $("focusSummary").textContent =
+      `${focus.rounds} round${focus.rounds === 1 ? "" : "s"} · ${fmtHM(total)} total (${fmtHM(focus.work * focus.rounds)} focus` +
+      `${focus.rest ? ` + ${fmtHM(focus.rest * focus.rounds)} rest` : ""})`;
+  }
+
+  function renderFocusPresets() {
+    const active = focus.phase === "work" || focus.phase === "rest";
+    $("focusPresets").innerHTML = FOCUS_PRESETS.map((p, i) => {
+      const on = p.work === focus.work && p.rest === focus.rest;
+      return `
+        <button type="button" data-focus-preset="${i}" ${active ? "disabled" : ""}
+          class="rounded-lg border px-2 py-2 text-center transition disabled:opacity-50 ${on ? "border-ink bg-ink text-paper" : "border-line bg-white hover:border-ink"}">
+          <div class="text-xs font-semibold">${p.label}</div>
+          <div class="text-[10px] tabular ${on ? "text-paper/70" : "text-inksoft"}">${p.sub}</div>
+        </button>`;
+    }).join("");
+    $("focusPresets").querySelectorAll("[data-focus-preset]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const p = FOCUS_PRESETS[Number(btn.getAttribute("data-focus-preset"))];
+        focus.work = p.work;
+        focus.rest = p.rest;
+        saveFocus();
+        fillFocusInputs();
+        renderFocusSummary();
+        renderFocusPresets();
+        renderFocusTimer();
+      });
+    });
+  }
+
+  function renderFocusControls() {
+    const active = focus.phase === "work" || focus.phase === "rest";
+    $("focusStartBtn").textContent = focus.running ? "Pause"
+      : active ? "Resume"
+      : focus.phase === "done" ? "Start again" : "Start";
+    $("focusResetBtn").disabled = focus.phase === "idle";
+    $("focusSkipBtn").disabled = !active;
+    ["focusWork", "focusRest", "focusRounds", "focusAutoStart"].forEach((id) => { $(id).disabled = active; });
+    $("focusHint").textContent = active ? "Reset to change the durations." : "";
+    renderFocusSummary();
+    renderFocusPresets();
+  }
+
+  function fillFocusInputs() {
+    $("focusWork").value = focus.work;
+    $("focusRest").value = focus.rest;
+    $("focusRounds").value = focus.rounds;
+    $("focusAutoStart").checked = focus.autoStart;
+    $("focusDayStart").value = getDayStart();
+  }
+
+  /* ---- "Working on" type-to-search box ---- */
+  function pickerTasks(query) {
+    const q = query.trim().toLowerCase();
+    const today = todayStr();
+    return state.tasks
+      .filter((t) => !t.completed && (!q || (t.title || "").toLowerCase().includes(q)))
+      .sort((a, b) =>
+        (a.scheduled_date === today ? 0 : 1) - (b.scheduled_date === today ? 0 : 1) ||
+        a.scheduled_date.localeCompare(b.scheduled_date) ||
+        (a.title || "").localeCompare(b.title || ""))
+      .slice(0, 40);
+  }
+
+  function hideFocusTaskMenu() { $("focusTaskMenu").classList.add("hidden"); }
+
+  function renderFocusTaskMenu() {
+    const q = $("focusTaskInput").value;
+    const list = pickerTasks(q);
+    const menu = $("focusTaskMenu");
+    if (!list.length) {
+      menu.innerHTML = `<div class="px-3 py-3 text-xs text-inksoft">${q.trim() ? "No matching task — what you typed will be used as a label only." : "No unfinished tasks yet."}</div>`;
+    } else {
+      menu.innerHTML = list.map((t) => {
+        const p = profileById[t.profile];
+        const leftMin = Math.ceil((t.estimated_minutes * 60 - taskUsedSec(t)) / 60);
+        const when = t.scheduled_date === todayStr() ? "Today" : t.scheduled_date;
+        return `
+          <button type="button" data-pick-task="${t.id}" class="w-full text-left px-3 py-2.5 hover:bg-black/[0.04] border-b border-line last:border-b-0">
+            <div class="text-sm font-medium truncate">${escapeHtml(t.title)}</div>
+            <div class="mt-0.5 flex items-center gap-2 text-[11px] text-inksoft tabular">
+              <span class="font-medium" style="color:${p.color}">${p.label}</span>
+              <span>${escapeHtml(when)}</span>
+              <span>${leftMin > 0 ? `${fmtHM(leftMin)} left` : `over by ${fmtHM(-leftMin)}`}</span>
+            </div>
+          </button>`;
+      }).join("");
+      menu.querySelectorAll("[data-pick-task]").forEach((btn) => {
+        btn.addEventListener("click", () => selectFocusTask(btn.getAttribute("data-pick-task")));
+      });
+    }
+    menu.classList.remove("hidden");
+  }
+
+  function selectFocusTask(id) {
+    const t = state.tasks.find((x) => x.id === id);
+    if (!t) return;
+    creditElapsed(); // time so far belongs to whatever was linked before
+    focus.taskId = id;
+    focus.label = "";
+    $("focusTaskInput").value = t.title;
+    $("focusTaskClear").classList.remove("hidden");
+    hideFocusTaskMenu();
+    saveFocus();
+    renderFocusTimer();
+  }
+
+  function clearFocusTask() {
+    creditElapsed();
+    focus.taskId = null;
+    focus.label = "";
+    $("focusTaskInput").value = "";
+    $("focusTaskClear").classList.add("hidden");
+    hideFocusTaskMenu();
+    saveFocus();
+    renderFocusTimer();
+  }
+
+  // keeps the box in sync with state (e.g. the linked task was finished or deleted)
+  function renderFocusTaskPicker() {
+    const t = linkedTask();
+    if (focus.taskId && !t) { focus.taskId = null; focus.label = ""; saveFocus(); }
+    const input = $("focusTaskInput");
+    const want = t ? t.title : focus.label;
+    if (input.value !== want && document.activeElement !== input) input.value = want;
+    $("focusTaskClear").classList.toggle("hidden", !(input.value || want));
+  }
+
+  function renderFocusAll() {
+    fillFocusInputs();
+    renderFocusTaskPicker();
+    renderFocusControls();
+    renderFocusTimer();
+    renderFocusStats();
+  }
+
+  /* ---- wiring ---- */
+  function wireFocusInput(id, key, lo, hi) {
+    const el = $(id);
+    el.addEventListener("input", () => {
+      if (el.value === "") return;
+      focus[key] = clampInt(el.value, lo, hi, focus[key]);
+      saveFocus();
+      renderFocusSummary();
+      renderFocusPresets();
+      if (focus.phase === "idle") renderFocusTimer();
+    });
+    el.addEventListener("change", () => { el.value = focus[key]; });
+  }
+  wireFocusInput("focusWork", "work", 1, 180);
+  wireFocusInput("focusRest", "rest", 0, 60);
+  wireFocusInput("focusRounds", "rounds", 1, 12);
+
+  $("focusAutoStart").addEventListener("change", () => {
+    focus.autoStart = $("focusAutoStart").checked;
+    saveFocus();
+  });
+  $("focusDayStart").addEventListener("change", () => {
+    const v = $("focusDayStart").value;
+    if (/^\d{2}:\d{2}$/.test(v)) localStorage.setItem(DAY_START_KEY, v);
+    renderFocusStats();
+  });
+
+  const taskInput = $("focusTaskInput");
+  taskInput.addEventListener("focus", renderFocusTaskMenu);
+  taskInput.addEventListener("input", () => {
+    const text = taskInput.value;
+    const t = linkedTask();
+    if (t && text === t.title) return;
+    if (t) {
+      // editing the text unlinks the task: switch state first, then bank the time to the old task
+      focus.taskId = null;
+      focus.label = text;
+      creditElapsed(t.id);
+    }
+    focus.label = text;
+    $("focusTaskClear").classList.toggle("hidden", !text);
+    saveFocus();
+    renderFocusTaskMenu();
+    renderFocusTimer();
+  });
+  taskInput.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { hideFocusTaskMenu(); return; }
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    if (linkedTask()) { hideFocusTaskMenu(); return; }
+    const first = pickerTasks(taskInput.value)[0];
+    if (first && taskInput.value.trim()) selectFocusTask(first.id); else hideFocusTaskMenu();
+  });
+  $("focusTaskClear").addEventListener("click", clearFocusTask);
+  document.addEventListener("click", (e) => {
+    if (!$("focusTaskWrap").contains(e.target)) hideFocusTaskMenu();
+  });
+
+  $("focusStartBtn").addEventListener("click", () => (focus.running ? pauseFocus() : startFocus()));
+  $("focusResetBtn").addEventListener("click", resetFocus);
+  $("focusSkipBtn").addEventListener("click", skipFocus);
+
+  // totals tick once a second while the Focus tab is open
+  setInterval(() => { if (state.view === "focus") renderFocusStats(); }, 1000);
+
+  loadFocus();
+  renderFocusControls();
+  renderFocusTimer();
+  if (focus.running) startFocusTicker();
 
   /* ------------------------------------------------------------------ */
   /* Boot / auth                                                         */
@@ -1790,6 +2822,7 @@
   async function showApp() {
     $("app").classList.remove("hidden");
     await Promise.all([refreshTasks(), refreshDiet()]);
+    flushAllPendingCredits();
     checkDailyRollover();
     state.bootDate = todayStr();
     setInterval(() => {
