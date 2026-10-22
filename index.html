@@ -43,6 +43,8 @@
          focused_seconds integer not null default 0,
          rested_seconds integer not null default 0,
          completed_on date,
+         kind text not null default 'task' check (kind in ('task','reminder')),
+         remind_offsets integer[] not null default '{}',
          created_at timestamptz not null default now()
        );
 
@@ -58,15 +60,19 @@
      only ever see and edit their own rows — that's what makes it safe to
      use the public "anon" key in this front-end file.
 
-     Already created this table before the "Daily task" feature existed?
-     Just run this too — it adds the two missing columns without touching
-     your existing rows:
+     Already created this table earlier? Just run this too — it adds any
+     missing columns without touching your existing rows. (The last two
+     power Reminders: "kind" says whether a row is a task or a reminder, and
+     "remind_offsets" lists how many days before the date to alert you.
+     Everything except saving reminders keeps working until you run it.)
 
        alter table public.tasks add column if not exists is_daily boolean not null default false;
        alter table public.tasks add column if not exists rollover_reviewed boolean not null default false;
        alter table public.tasks add column if not exists focused_seconds integer not null default 0;
        alter table public.tasks add column if not exists rested_seconds integer not null default 0;
        alter table public.tasks add column if not exists completed_on date;
+       alter table public.tasks add column if not exists kind text not null default 'task' check (kind in ('task','reminder'));
+       alter table public.tasks add column if not exists remind_offsets integer[] not null default '{}';
 
   2b) CREATE THE DIET TABLES + SECURITY RULES
      - Same SQL Editor, new query, run this too (it adds two more tables:
@@ -331,6 +337,15 @@
         </button>
       </form>
 
+      <div class="-mt-2 mb-5 flex flex-wrap items-center gap-2">
+        <button type="button" id="addReminderBtn" class="text-xs font-medium px-3 py-1.5 rounded-full border border-line bg-white hover:border-ink transition">+ Reminder</button>
+        <button type="button" id="importPdfBtn" class="text-xs font-medium px-3 py-1.5 rounded-full border border-line bg-white hover:border-ink transition">Import schedule from PDF</button>
+        <input id="pdfInput" type="file" accept="application/pdf,.pdf" class="hidden" />
+      </div>
+
+      <!-- Reminders whose alert window has opened -->
+      <div id="upcomingReminders" class="hidden mb-5 bg-card border border-gold/50 rounded-2xl overflow-hidden"></div>
+
       <div class="grid grid-cols-1 md:grid-cols-[280px_1fr] gap-6">
 
       <!-- Dial / budget card -->
@@ -535,6 +550,8 @@
         <button data-close-modal class="w-8 h-8 rounded-full hover:bg-black/5 flex items-center justify-center">✕</button>
       </div>
       <form id="taskForm" class="px-5 pb-5 space-y-4">
+        <div id="fKindChips" class="flex gap-1 bg-white/70 border border-line rounded-full p-1"></div>
+
         <div>
           <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Title</label>
           <input id="fTitle" required maxlength="120" placeholder="e.g. Draft chapter outline"
@@ -548,16 +565,16 @@
 
         <div class="grid grid-cols-2 gap-3">
           <div>
-            <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Scheduled date</label>
+            <label id="fDateLabel" class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Scheduled date</label>
             <input id="fScheduledDate" type="date" required class="w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm focus:border-gold" />
           </div>
           <div>
-            <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Deadline <span class="text-inksoft/60 normal-case">(optional)</span></label>
+            <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5"><span id="fDeadlineLabelText">Deadline</span> <span class="text-inksoft/60 normal-case">(optional)</span></label>
             <input id="fDeadline" type="datetime-local" class="w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm focus:border-gold" />
           </div>
         </div>
 
-        <div>
+        <div id="fDurationWrap">
           <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Estimated duration</label>
           <div class="flex items-center gap-2">
             <input id="fEstHours" type="number" min="0" max="16" value="1" class="w-20 rounded-lg border border-line bg-white px-3 py-2.5 text-sm focus:border-gold" />
@@ -568,7 +585,18 @@
           <p id="fEstWarning" class="hidden mt-1.5 text-xs text-danger"></p>
         </div>
 
-        <div class="flex items-center justify-between gap-3 rounded-lg border border-line px-3 py-2.5">
+        <div id="fRemindWrap" class="hidden">
+          <label class="block text-xs font-medium uppercase tracking-wide text-inksoft mb-1.5">Remind me</label>
+          <div id="fRemindChips" class="flex flex-wrap gap-2"></div>
+          <div class="mt-2.5 flex items-center gap-2">
+            <input id="fRemindCustom" type="number" min="0" max="365" inputmode="numeric" placeholder="Custom" class="w-24 rounded-lg border border-line bg-white px-3 py-1.5 text-sm focus:border-gold" />
+            <span class="text-xs text-inksoft">days before</span>
+            <button type="button" id="fRemindCustomAdd" class="text-xs font-medium px-3 py-1.5 rounded-lg border border-line hover:border-ink">Add</button>
+          </div>
+          <p id="fRemindHint" class="mt-2 text-xs text-inksoft leading-relaxed"></p>
+        </div>
+
+        <div id="fDailyWrap" class="flex items-center justify-between gap-3 rounded-lg border border-line px-3 py-2.5">
           <div class="min-w-0">
             <div class="text-sm font-medium">Repeat daily</div>
             <div class="text-xs text-inksoft leading-relaxed">If it's left unfinished, you'll be asked whether to carry it into tomorrow. No-deadline tasks only.</div>
@@ -579,10 +607,33 @@
         </div>
 
         <div class="flex items-center gap-2 pt-1">
-          <button type="submit" class="flex-1 rounded-lg bg-ink text-paper py-2.5 text-sm font-medium hover:bg-ink/90 transition">Save task</button>
+          <button type="submit" id="saveTaskBtn" class="flex-1 rounded-lg bg-ink text-paper py-2.5 text-sm font-medium hover:bg-ink/90 transition">Save task</button>
           <button type="button" id="deleteTaskBtn" class="hidden rounded-lg border border-danger text-danger py-2.5 px-4 text-sm font-medium hover:bg-danger/5">Delete</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- ===================== IMPORT FROM PDF MODAL ===================== -->
+  <div id="importModal" class="hidden fixed inset-0 z-40 modal-backdrop flex items-end md:items-center justify-center p-0 md:p-4">
+    <div class="bg-card w-full md:max-w-2xl rounded-t-2xl md:rounded-2xl border border-line max-h-[92vh] flex flex-col">
+      <div class="px-5 pt-5 pb-2 flex items-center justify-between shrink-0">
+        <h2 class="font-display text-xl">Import from PDF</h2>
+        <button data-close-modal class="w-8 h-8 rounded-full hover:bg-black/5 flex items-center justify-center">✕</button>
+      </div>
+      <div class="px-5 pb-3 shrink-0">
+        <p id="importStatus" class="text-sm text-inksoft leading-relaxed"></p>
+        <div id="importToolbar" class="hidden mt-2 flex items-center justify-between text-xs text-inksoft">
+          <span id="importCount" class="tabular"></span>
+          <span><button id="importAllBtn" type="button" class="underline decoration-line hover:text-ink">Select all</button> · <button id="importNoneBtn" type="button" class="underline decoration-line hover:text-ink">None</button></span>
+        </div>
+        <div id="importDebug"></div>
+      </div>
+      <div id="importList" class="px-5 overflow-y-auto flex-1 min-h-0 space-y-2.5 pb-3"></div>
+      <div class="px-5 py-4 border-t border-line shrink-0 flex items-center gap-2">
+        <button id="importConfirmBtn" disabled class="flex-1 rounded-lg bg-ink text-paper py-2.5 text-sm font-medium hover:bg-ink/90 transition disabled:opacity-40">Add 0 items</button>
+        <button data-close-modal class="rounded-lg border border-line px-4 py-2.5 text-sm font-medium hover:border-ink">Cancel</button>
+      </div>
     </div>
   </div>
 
@@ -727,7 +778,7 @@
   <div id="reminderModal" class="hidden fixed inset-0 z-40 modal-backdrop flex items-end md:items-center justify-center p-0 md:p-4">
     <div class="bg-card w-full md:max-w-md rounded-t-2xl md:rounded-2xl border border-line max-h-[92vh] overflow-y-auto">
       <div class="px-5 pt-5 pb-2 flex items-center justify-between">
-        <h2 class="font-display text-xl">Coming up tomorrow</h2>
+        <h2 class="font-display text-xl">Coming up</h2>
         <button data-close-modal class="w-8 h-8 rounded-full hover:bg-black/5 flex items-center justify-center">✕</button>
       </div>
       <div class="px-5 pb-5">
@@ -968,6 +1019,15 @@
     return addDays(d, delta);
   }
 
+  function nextDayOfMonth(day) {
+    const t = startOfToday();
+    for (let i = 0; i < 14; i++) {
+      const d = new Date(t.getFullYear(), t.getMonth() + i, day);
+      if (d.getDate() === day && d >= t) return d; // a mismatch means the month has no such day (e.g. the 31st)
+    }
+    return null;
+  }
+
   function buildMonthDayDate(day, month) {
     const now = new Date();
     let d = new Date(now.getFullYear(), month, day);
@@ -994,6 +1054,9 @@
       dateObj = new Date();
     } else if (/\btomorrow\b/.test(lower)) {
       dateObj = addDays(new Date(), 1);
+    } else if ((m = lower.match(/\b(\d{1,2})(?:st|nd|rd|th)\b(?!\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec))/)) && nextDayOfMonth(Number(m[1]))) {
+      // a bare ordinal like "test on 10th" → the next 10th
+      dateObj = nextDayOfMonth(Number(m[1]));
     } else if ((m = lower.match(/\b(?:next\s+)?(sunday|sun|monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thurs|friday|fri|saturday|sat)\b/))) {
       dateObj = nextWeekday(WEEKDAY_NAMES[m[1]]);
     } else if ((m = lower.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*/))) {
@@ -1029,12 +1092,14 @@
     }
 
     let title = text
+      .replace(/\bremind(?:er|ers)?\b[\s:,\-]*(?:me\b[\s:,\-]*)?(?:(?:to|of|about|for|that)\b[\s:,\-]*)?/gi, "")
       .replace(/\btoday\b/gi, "")
       .replace(/\btonight\b/gi, "")
       .replace(/\btomorrow\b/gi, "")
       .replace(/\b(?:next\s+)?(?:sunday|sun|monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thurs|friday|fri|saturday|sat)\b/gi, "")
       .replace(/\b\d{1,2}(?:st|nd|rd|th)?\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*/gi, "")
       .replace(/\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+\d{1,2}(?:st|nd|rd|th)?\b/gi, "")
+      .replace(/\b\d{1,2}(?:st|nd|rd|th)\b/gi, "")
       .replace(/\b\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?\b/gi, "")
       .replace(/\bnoon\b/gi, "")
       .replace(/\bmidnight\b/gi, "")
@@ -1044,6 +1109,7 @@
       .replace(/\b(?:on|by|at|due|next)\b/gi, "")
       .replace(/\s{2,}/g, " ")
       .replace(/^[\s,.\-]+|[\s,.\-]+$/g, "")
+      .replace(/\s+(?:the|of|in)$/i, "")
       .trim();
     if (!title) title = text.trim();
     title = title.charAt(0).toUpperCase() + title.slice(1);
@@ -1052,7 +1118,379 @@
     const scheduled_date = toDateStr(dateObj);
     const deadline = timeStr ? new Date(`${scheduled_date}T${timeStr}:00`).toISOString() : null;
 
-    return { title, profile, scheduled_date, deadline, estimated_minutes, dateWasGuessed };
+    const kind = looksLikeReminder(lower) ? "reminder" : "task";
+    return { title, profile, scheduled_date, deadline, estimated_minutes, dateWasGuessed, kind, remind_offsets: defaultOffsetsFor(lower) };
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Reminders: what counts as one, and when to alert                    */
+  /* ------------------------------------------------------------------ */
+  // A "reminder" is something that happens on a date (a test, an appointment,
+  // a birthday) rather than work you do. It takes no time from the day's budget
+  // and alerts you ahead of time instead of being ticked off.
+  const REMIND_PRESETS = [0, 1, 2, 3, 5, 7, 14];
+  const OFFSET_COMBOS = [
+    { v: "0", label: "On the day" },
+    { v: "1", label: "1 day before" },
+    { v: "2", label: "2 days before" },
+    { v: "7", label: "1 week before" },
+    { v: "7,2", label: "1 week + 2 days before" },
+    { v: "7,2,0", label: "1 week + 2 days + on the day" },
+  ];
+  // verbs that mean "this is work to do", e.g. "study for test" stays a task
+  const TASK_VERB_RE = /\b(?:study|studying|revise|revising|revision|prepare|preparing|prep|practice|practise|solve|read|write|complete|finish|submit|work on|learn|review|buy|book|plan|organi[sz]e|call|email|send|pay|pack|clean|fix|edit|design|make)\b/i;
+  const EXAM_RE = /\b(?:tests?|exams?|examinations?|quiz(?:zes)?|vivas?|mid-?terms?|finals|interviews?)\b/i;
+  const EVENT_RE = /\b(?:tests?|exams?|examinations?|quiz(?:zes)?|vivas?|mid-?terms?|finals|interviews?|appointments?|birthday|bday|anniversary|meeting|flight|concert|wedding|party|dentist|doctor|check-?up|festival|holiday|trip|ceremony|seminar|webinar|conference|tournament|results?)\b/i;
+
+  function looksLikeReminder(lower) {
+    if (/\bremind(?:er|ers)?\b/.test(lower)) return true;
+    if (TASK_VERB_RE.test(lower)) return false;
+    return EVENT_RE.test(lower);
+  }
+  // tests/exams get "1 week + 2 days before"; everything else "1 day before"
+  function defaultOffsetsFor(lower) { return EXAM_RE.test(lower) ? [7, 2] : [1]; }
+
+  const isReminder = (t) => !!t && t.kind === "reminder";
+
+  function normalizeOffsets(arr) {
+    const list = Array.isArray(arr) ? arr : [];
+    return [...new Set(list.map(Number).filter((n) => Number.isInteger(n) && n >= 0 && n <= 365))].sort((a, b) => b - a);
+  }
+  function offsetLabel(n) {
+    if (n === 0) return "On the day";
+    if (n === 1) return "1 day before";
+    if (n % 7 === 0) return n === 7 ? "1 week before" : `${n / 7} weeks before`;
+    return `${n} days before`;
+  }
+  function fmtOffsetsShort(arr) {
+    const list = normalizeOffsets(arr);
+    if (!list.length) return "No alerts";
+    return "Alerts: " + list.map((n) => (n === 0 ? "day of" : n % 7 === 0 ? `${n / 7} wk` : `${n} d`)).join(" · ");
+  }
+  function daysUntil(dateStr) {
+    return Math.round((parseDateStr(dateStr) - startOfToday()) / 86400000);
+  }
+  function whenLabel(n) {
+    if (n < 0) return `${-n} day${n === -1 ? "" : "s"} ago`;
+    if (n === 0) return "Today";
+    if (n === 1) return "Tomorrow";
+    return `In ${n} days`;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* PDF → text lines → schedule items                                   */
+  /* ------------------------------------------------------------------ */
+  // pdf.js hands back loose text fragments with x/y positions. Group the ones on
+  // the same baseline into a line, and mark big horizontal gaps (table columns)
+  // with " | " so the parser can tell cells apart.
+  function pdfItemsToLines(items) {
+    const toks = [];
+    for (const it of items) {
+      const raw = it.str || "";
+      const s = raw.trim();
+      if (!s || !it.transform) continue;
+      const h = Math.abs(it.height || it.transform[3] || 0) || 10;
+      toks.push({ s, x: it.transform[4], y: it.transform[5], w: it.width || 0, h, lead: /^\s/.test(raw), trail: /\s$/.test(raw) });
+    }
+    toks.sort((a, b) => b.y - a.y || a.x - b.x);
+    const rows = [];
+    for (const t of toks) {
+      const last = rows[rows.length - 1];
+      if (last && Math.abs(last.y - t.y) <= Math.max(2, last.h * 0.5)) last.toks.push(t);
+      else rows.push({ y: t.y, h: t.h, toks: [t] });
+    }
+    return rows.map((r) => {
+      r.toks.sort((a, b) => a.x - b.x);
+      const cells = [];
+      let cur = "", prevEnd = null, prevH = 0, prevTrail = false;
+      for (const t of r.toks) {
+        if (prevEnd === null) cur = t.s;
+        else {
+          const gap = t.x - prevEnd;
+          const h = Math.max(t.h, prevH);
+          if (gap > h * 1.1) { cells.push(cur); cur = t.s; }
+          else if (gap < h * 0.08 && !prevTrail && !t.lead) cur += t.s;
+          else cur += " " + t.s;
+        }
+        prevEnd = t.x + t.w; prevH = t.h; prevTrail = t.trail;
+      }
+      cells.push(cur);
+      return cells.join(" | ");
+    });
+  }
+
+  const MONTH_SRC = "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?";
+  const WD_SRC = "mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:rs?(?:day)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?";
+  const SEP = "[\\s|:,\\-–—]";
+  const RANGE_TAIL = "(?:\\s*(?:-|–|—|to)\\s*\\d{1,2}(?:st|nd|rd|th)?(?!\\d|[:.]\\d))?";
+  const HEADER_WORDS = new Set(("date dates day days time times subject subjects task tasks activity activities event events " +
+    "description details detail schedule agenda timetable duration notes note remarks remark week weeks month months year " +
+    "class classes course topic topics venue room location type status priority sl no sr sno s calendar plan plans list " +
+    "todo to do for of on the my todays today daily weekly monthly semester term academic from and by at in with page").split(" "));
+
+  const validDate = (y, m, d) => {
+    const dt = new Date(y, m, d);
+    return dt.getFullYear() === y && dt.getMonth() === m && dt.getDate() === d ? dt : null;
+  };
+  const monthIdx = (w) => MONTH_NAMES[w.toLowerCase().slice(0, 3)];
+  function nearestDate(mon, day) {
+    const today = startOfToday();
+    let best = null, bestDiff = Infinity;
+    for (const y of [today.getFullYear() - 1, today.getFullYear(), today.getFullYear() + 1]) {
+      const dt = validDate(y, mon, day);
+      if (dt && Math.abs(dt - today) < bestDiff) { best = dt; bestDiff = Math.abs(dt - today); }
+    }
+    return best;
+  }
+  function nextWeekdayFrom(base, dow, inclusive) {
+    let delta = (dow - base.getDay() + 7) % 7;
+    if (!inclusive && delta === 0) delta = 7;
+    return addDays(base, delta);
+  }
+
+  // "9:00-10:30", "9-10am", "2pm", "14:00", "noon" → minutes since midnight
+  function takeTimes(s0) {
+    let s = s0.replace(/\b([ap])\.\s?m\.?/gi, "$1m");
+    const to24 = (h, mer) => { if (!mer) return h; h %= 12; return mer.toLowerCase() === "pm" ? h + 12 : h; };
+    let start = null, end = null, m;
+    const range = /\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:-|–|—|to|till|until)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/gi;
+    while ((m = range.exec(s))) {
+      if (!(m[2] || m[3] || m[5] || m[6])) continue; // "10-12" alone is more likely a date range than a time
+      const h1 = +m[1], mi1 = m[2] ? +m[2] : 0, h2 = +m[4], mi2 = m[5] ? +m[5] : 0;
+      if (h1 > 23 || h2 > 23 || mi1 > 59 || mi2 > 59) continue;
+      if ((m[3] || m[6]) && (h1 > 12 || h2 > 12)) continue;
+      const e = to24(h2, m[6]) * 60 + mi2;
+      let st;
+      if (m[3]) st = to24(h1, m[3]) * 60 + mi1;
+      else if (m[6]) {
+        st = to24(h1, m[6]) * 60 + mi1;
+        if (st >= e) st = to24(h1, m[6].toLowerCase() === "pm" ? "am" : "pm") * 60 + mi1; // "11-1pm" starts at 11am
+      } else st = h1 * 60 + mi1;
+      start = st; end = e;
+      s = s.slice(0, m.index) + " " + s.slice(m.index + m[0].length);
+      break;
+    }
+    if (start == null) {
+      let mm = s.match(/\b(\d{1,2}):(\d{2})\s*(am|pm)?(?:\s*(?:hrs?|hours))?(?![\d:])/i);
+      if (mm && +mm[1] <= 23 && +mm[2] <= 59 && !(mm[3] && +mm[1] > 12)) {
+        start = to24(+mm[1], mm[3]) * 60 + +mm[2];
+        s = s.slice(0, mm.index) + " " + s.slice(mm.index + mm[0].length);
+      } else if ((mm = s.match(/\b(\d{1,2})\s*(am|pm)\b/i)) && +mm[1] >= 1 && +mm[1] <= 12) {
+        start = to24(+mm[1], mm[2]) * 60;
+        s = s.slice(0, mm.index) + " " + s.slice(mm.index + mm[0].length);
+      } else if (/\bnoon\b/i.test(s)) {
+        start = 720;
+        s = s.replace(/\bnoon\b/i, " ");
+      }
+    }
+    return { s, start, end };
+  }
+
+  function takeDuration(s) {
+    let m, mins = null;
+    if ((m = s.match(/\b(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h)\b[\s,]*(?:and\s+)?(\d{1,2})\s*(?:minutes?|mins?|m)\b/i))) mins = Math.round(+m[1] * 60 + +m[2]);
+    else if ((m = s.match(/\b(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h)\b/i))) mins = Math.round(+m[1] * 60);
+    else if ((m = s.match(/\b(\d{1,3})\s*(?:minutes?|mins?)\b/i))) mins = +m[1];
+    if (m) s = s.slice(0, m.index) + " " + s.slice(m.index + m[0].length);
+    return { s, mins };
+  }
+
+  function cleanScheduleTitle(s) {
+    s = s.replace(/\|/g, " ")
+      .replace(/\(\s*\)|\[\s*\]/g, " ")
+      .replace(new RegExp(`\\(\\s*(?:${WD_SRC})\\s*\\)`, "gi"), " ")
+      .replace(/\s{2,}/g, " ").trim();
+    for (let i = 0; i < 3; i++) {
+      s = s.replace(/^[\s,.:;\-–—•·▪■□☐☑✓✔*►>]+/, "")
+        .replace(/[\s,:;\-–—(]+$/, "")
+        .replace(new RegExp(`^(?:${WD_SRC})\\b[\\s,.:;\\-–—]*`, "i"), "")
+        .replace(/^\d{1,2}[.)]\s+/, "")
+        .replace(/^(?:on|at|by|due|from|till|until|for)\b[\s,.:;\-–—]*/i, "")
+        .replace(/\s+(?:on|at|by|from|till|until|for|the|of|in)$/i, "");
+    }
+    return s.replace(/\s{2,}/g, " ").trim();
+  }
+
+  // Turn the text lines of a schedule PDF into candidate tasks / reminders.
+  // Understands: "12 Nov | 9:00-10:30 | Maths lecture", "Nov 12 - Economics test",
+  // a dated heading followed by timed lines, a month heading followed by bare day
+  // numbers, and weekday-led lines. Anything it's unsure of is flagged for review.
+  function parseScheduleLines(rawLines) {
+    const today = startOfToday();
+    const text = rawLines.join("\n");
+
+    // the year the document is about: the most common nearby 4-digit year
+    const years = {};
+    for (const m of text.matchAll(/\b(20\d{2})\b/g)) {
+      const y = +m[1];
+      if (y >= today.getFullYear() - 1 && y <= today.getFullYear() + 2) years[y] = (years[y] || 0) + 1;
+    }
+    const yk = Object.keys(years).map(Number).sort((a, b) => years[b] - years[a] || Math.abs(a - today.getFullYear()) - Math.abs(b - today.getFullYear()));
+    const docYear = yk.length ? yk[0] : null;
+
+    // 03/04 → day-first (default) unless the document proves month-first
+    let order = "dmy";
+    for (const re of [/\b(\d{1,2})\/(\d{1,2})(?:\/\d{2,4})?\b/g, /\b(\d{1,2})[.\-](\d{1,2})[.\-](?:\d{2}|\d{4})\b/g]) {
+      let done = false;
+      for (const m of text.matchAll(re)) {
+        if (+m[1] > 12 && +m[2] <= 12) { order = "dmy"; done = true; break; }
+        if (+m[2] > 12 && +m[1] <= 12) { order = "mdy"; done = true; break; }
+      }
+      if (done) break;
+    }
+
+    const ctx = { date: null, month: null, year: null };
+    const resolve = (mon, day, explicitYear) => {
+      if (explicitYear) return validDate(explicitYear, mon, day);
+      const y = ctx.year || docYear;
+      return y ? validDate(y, mon, day) : nearestDate(mon, day);
+    };
+    const ordered = (a, b) => (order === "dmy" ? [a, b - 1] : [b, a - 1]); // → [day, monthIndex]
+
+    const PATS = [
+      { re: /\b(20\d{2})-(\d{1,2})-(\d{1,2})\b/g, fn: (m) => validDate(+m[1], +m[2] - 1, +m[3]) },
+      { re: new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?${RANGE_TAIL}[\\s\\-\\/.,]*(?:of\\s+)?(${MONTH_SRC})\\b\\.?(?:[\\s,\\-]*(20\\d{2})\\b)?`, "gi"),
+        fn: (m) => resolve(monthIdx(m[2]), +m[1], m[3] ? +m[3] : null) },
+      { re: new RegExp(`\\b(${MONTH_SRC})\\b\\.?[\\s,\\-]*(\\d{1,2})(?:st|nd|rd|th)?(?!\\d|[:.]\\d)${RANGE_TAIL}(?:[\\s,\\-]+(20\\d{2})\\b)?`, "gi"),
+        fn: (m) => resolve(monthIdx(m[1]), +m[2], m[3] ? +m[3] : null) },
+      { re: /\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4}|\d{2})\b/g,
+        fn: (m) => { const [d, mo] = ordered(+m[1], +m[2]); const y = m[3].length === 2 ? 2000 + +m[3] : +m[3]; return validDate(y, mo, d); } },
+      { re: /\b(\d{1,2})\/(\d{1,2})\b(?!\/|\d)/g,
+        fn: (m) => { const [d, mo] = ordered(+m[1], +m[2]); return mo >= 0 && mo < 12 ? resolve(mo, d, null) : null; } },
+    ];
+    function takeDate(s) {
+      for (const { re, fn } of PATS) {
+        re.lastIndex = 0;
+        let m;
+        while ((m = re.exec(s))) {
+          if (m.index > 0 && s[m.index - 1] === ":") continue;
+          const d = fn(m);
+          if (d) return { date: d, rest: s.slice(0, m.index) + " " + s.slice(m.index + m[0].length) };
+        }
+      }
+      return { date: null, rest: s };
+    }
+
+    const wdOnly = new RegExp(`^(?:${WD_SRC})\\.?,?$`, "i");
+    const wdLead = new RegExp(`^(${WD_SRC})\\b\\.?,?(?=\\s|$)`, "i");
+    const monthAlone = new RegExp(`^\\W*(${MONTH_SRC})\\b\\.?[\\s,]*(20\\d{2})?\\W*$`, "i");
+    const monthYear = new RegExp(`\\b(${MONTH_SRC})\\b\\.?,?\\s+(20\\d{2})\\b`, "i");
+    const bareDay = new RegExp(`^\\s*(\\d{1,2})(?:st|nd|rd|th)?(?!\\d|[:.]\\d|\\s*(?:am|pm|hours?|hrs?|mins?|minutes?)\\b)${SEP}+`, "i");
+
+    const items = [];
+    const seen = new Set();
+    let lastWasItem = false, undated = 0;
+
+    for (const raw of rawLines) {
+      const line = (raw || "").replace(/[ \t\u00a0]+/g, " ").trim();
+      if (!line) continue;
+      if (/\bpage\s+\d+\s*(?:of|\/)\s*\d+\b/i.test(line) || /^page\s+\d+$/i.test(line)) continue;
+
+      const hadBullet = /^[•·▪■□☐☑✓✔*►>]\s*/.test(line) || /^[-–—]\s+\S/.test(line);
+      const parts = line.split("|").map((c) => c.trim()).filter(Boolean);
+      if (!parts.length) continue;
+
+      let leadWd = null;
+      if (wdOnly.test(parts[0])) leadWd = parts[0];
+      else { const wm = parts[0].match(wdLead); if (wm) leadWd = wm[1]; }
+      const cells = parts.filter((c) => !wdOnly.test(c));
+      // a leading serial-number column ("1 | 12 Nov | ...") is noise
+      if (cells.length >= 3 && /^\d{1,3}\.?$/.test(cells[0]) && takeDate(cells.slice(1).join(" | ")).date) cells.shift();
+
+      let s = cells.join(" | ").replace(/^[•·▪■□☐☑✓✔*►>]\s*/, "").replace(/^[-–—]\s+/, "");
+      let guessed = false, fromWeekday = false;
+      const found = takeDate(s);
+      let date = found.date;
+      s = found.rest;
+
+      if (!date) {
+        // "November 2026" / "NOVEMBER" headings set the month for the bare day numbers below them
+        let mh = s.match(monthAlone);
+        if (mh) {
+          ctx.month = monthIdx(mh[1]); ctx.year = mh[2] ? +mh[2] : null; ctx.date = null; lastWasItem = false;
+          continue;
+        }
+        mh = s.match(monthYear);
+        if (mh) {
+          const leftover = cleanScheduleTitle(s.replace(monthYear, " ")).toLowerCase().split(/[^a-z]+/).filter(Boolean);
+          if (leftover.every((w) => HEADER_WORDS.has(w))) {
+            ctx.month = monthIdx(mh[1]); ctx.year = +mh[2]; ctx.date = null; lastWasItem = false;
+            continue;
+          }
+        }
+      }
+
+      if (!date && ctx.month != null) {
+        const bm = s.match(bareDay);
+        if (bm) {
+          const d = +bm[1];
+          const dt = d >= 1 && d <= 31 ? resolve(ctx.month, d, null) : null;
+          if (dt && s.slice(bm[0].length).trim()) { date = dt; s = s.slice(bm[0].length); }
+        }
+      }
+
+      if (!date && leadWd && ctx.month == null) {
+        const dow = WEEKDAY_NAMES[leadWd.toLowerCase().slice(0, 3)];
+        if (dow != null) {
+          if (ctx.date) date = nextWeekdayFrom(ctx.date, dow, true);
+          else { date = nextWeekday(dow); guessed = true; }
+          fromWeekday = true;
+        }
+      }
+
+      const tm = takeTimes(s); s = tm.s;
+      const du = takeDuration(s); s = du.s;
+      const title = cleanScheduleTitle(s);
+      const words = title.toLowerCase().split(/[^a-z]+/).filter(Boolean);
+      const hasLetters = /\p{L}/u.test(title);
+      const headerish = !hasLetters || (words.length > 0 && words.every((w) => HEADER_WORDS.has(w)));
+
+      let useDate = null;
+      if (date && (headerish || /:\s*$/.test(line))) {
+        // a heading such as "Monday, 12 October 2026" or "Tasks for 12 Oct:" — applies to the lines below
+        if (!fromWeekday) ctx.date = date;
+        lastWasItem = false;
+        continue;
+      } else if (date) {
+        useDate = date;
+        if (!fromWeekday) ctx.date = date;
+      } else if (headerish) {
+        lastWasItem = false;
+        continue;
+      } else if (ctx.date && (tm.start != null || hadBullet || (cells.length >= 2 && lastWasItem))) {
+        useDate = ctx.date;
+      } else {
+        if (tm.start != null && !ctx.date) undated++;
+        lastWasItem = false;
+        continue;
+      }
+
+      const lower = title.toLowerCase();
+      const kind = looksLikeReminder(lower) ? "reminder" : "task";
+      let time = "";
+      if (tm.start != null) {
+        const mins = kind === "task" && tm.end != null ? tm.end : tm.start; // a task is "done by" the end of its slot
+        time = `${pad2(Math.floor(mins / 60))}:${pad2(mins % 60)}`;
+      }
+      let minutes = 30;
+      if (tm.start != null && tm.end != null && tm.end > tm.start) minutes = tm.end - tm.start;
+      else if (du.mins) minutes = du.mins;
+      minutes = Math.min(Math.max(minutes, 5), 960);
+
+      const finalTitle = title.charAt(0).toUpperCase() + title.slice(1);
+      const row = {
+        title: finalTitle.slice(0, 120), date: toDateStr(useDate), time, kind, minutes,
+        offsets: kind === "reminder" ? defaultOffsetsFor(lower) : [1],
+        profile: guessProfileFromText(lower), dateGuessed: guessed, src: line.slice(0, 160),
+      };
+      const key = `${row.title.toLowerCase()}|${row.date}|${row.time}`;
+      lastWasItem = true;
+      if (seen.has(key)) continue; // e.g. a table header repeated on every page
+      seen.add(key);
+      items.push(row);
+      if (items.length >= 400) break;
+    }
+    return { items, undated, docYear };
   }
 
   /* ------------------------------------------------------------------ */
@@ -1092,6 +1530,12 @@
       catch { return []; }
     },
     async save(tasks) { localStorage.setItem(LOCAL_KEY, JSON.stringify(tasks)); },
+    async addMany(rows) {
+      const tasks = await this.list();
+      const created = rows.map((r) => ({ ...r, id: uuid(), created_at: new Date().toISOString() }));
+      await this.save(tasks.concat(created));
+      return created;
+    },
     async add(task) {
       const tasks = await this.list();
       const row = { ...task, id: uuid(), created_at: new Date().toISOString() };
@@ -1156,6 +1600,10 @@
     return { url, key, configured };
   }
 
+  // Reminders need two extra columns; tell the person how to add them instead of failing silently.
+  const REMINDER_SQL_MSG = "Reminders need one extra SQL step in Supabase — see the setup notes at the top of this file.";
+  const missingReminderColumns = (err) => /remind_offsets|['"]kind['"]/.test((err && err.message) || "");
+
   const supabaseDb = {
     client: null,
     userId: null,
@@ -1168,7 +1616,13 @@
     async add(task) {
       const row = { ...task, user_id: this.userId };
       const { data, error } = await this.client.from("tasks").insert(row).select().single();
-      if (error) { console.error(error); toast("Couldn't save that task."); return null; }
+      if (error) { console.error(error); toast(missingReminderColumns(error) ? REMINDER_SQL_MSG : "Couldn't save that task."); return null; }
+      return data;
+    },
+    async addMany(rows) {
+      const payload = rows.map((r) => ({ ...r, user_id: this.userId }));
+      const { data, error } = await this.client.from("tasks").insert(payload).select();
+      if (error) { console.error(error); toast(missingReminderColumns(error) ? REMINDER_SQL_MSG : "Couldn't save those tasks."); return []; }
       return data;
     },
     async update(id, patch) {
@@ -1181,7 +1635,7 @@
         if (!Object.keys(slim).length) return null;
         ({ data, error } = await this.client.from("tasks").update(slim).eq("id", id).select().single());
       }
-      if (error) { console.error(error); toast("Couldn't update that task."); return null; }
+      if (error) { console.error(error); toast(missingReminderColumns(error) ? REMINDER_SQL_MSG : "Couldn't update that task."); return null; }
       return data;
     },
     async remove(id) {
@@ -1250,6 +1704,7 @@
   /* Derived data                                                        */
   /* ------------------------------------------------------------------ */
   function minutesForTask(t) {
+    if (isReminder(t)) return 0; // reminders never use up the day's time budget
     return t.completed && t.actual_minutes != null ? t.actual_minutes : t.estimated_minutes;
   }
 
@@ -1287,12 +1742,14 @@
         return d >= start && d <= end;
       });
     } else if (state.period === "deadlines") {
-      list = list.filter((t) => !!t.deadline);
-      list = [...list].sort((a, b) => new Date(a.deadline) - new Date(b.deadline));
+      list = list.filter((t) => !!t.deadline || isReminder(t));
+      const when = (t) => new Date(t.deadline || `${t.scheduled_date}T00:00:00`);
+      list = [...list].sort((a, b) => when(a) - when(b));
       return list;
     }
     return [...list].sort((a, b) => {
       if (a.completed !== b.completed) return a.completed ? 1 : -1;
+      if (isReminder(a) !== isReminder(b)) return isReminder(a) ? -1 : 1; // reminders first
       if (a.deadline && b.deadline) return new Date(a.deadline) - new Date(b.deadline);
       if (a.deadline) return -1;
       if (b.deadline) return 1;
@@ -1446,7 +1903,44 @@
       `<span class="text-inksoft/70">(${fmtHM(Math.floor(used / 60))} tracked)</span>`;
   }
 
+  const BELL_SVG = (size) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>`;
+
+  function reminderStatus(t) {
+    if (t.completed) return { label: "Done", tone: "done" };
+    const n = daysUntil(t.scheduled_date);
+    if (n < 0) return { label: whenLabel(n), tone: "past" };
+    if (n <= 1) return { label: whenLabel(n), tone: "soon" };
+    return { label: `in ${n} days`, tone: "normal" };
+  }
+
+  function reminderRowHtml(t) {
+    const p = profileById[t.profile];
+    const st = reminderStatus(t);
+    const toneClass = { done: "text-inksoft/60", past: "text-inksoft", soon: "text-golddeep", normal: "text-inksoft" }[st.tone];
+    return `
+      <div class="flex items-start gap-3 px-4 py-3.5 hover:bg-black/[0.02] transition" data-task-row="${t.id}">
+        <button data-toggle="${t.id}" title="${t.completed ? "Mark not done" : "Mark done"}" class="mt-0.5 shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center transition text-golddeep"
+          style="border-color:#D8A63D; background:${t.completed ? "#D8A63D" : "rgba(216,166,61,.15)"}">
+          ${t.completed ? '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="4"><path d="M20 6 9 17l-5-5"/></svg>' : BELL_SVG(10)}
+        </button>
+
+        <div class="flex-1 min-w-0 cursor-pointer" data-edit="${t.id}">
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="text-sm font-medium ${t.completed ? "line-through text-inksoft" : ""}">${escapeHtml(t.title)}</span>
+            <span class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-medium" style="background:${p.color}1A; color:${p.color}">${p.label}</span>
+            <span class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-medium bg-gold/20 text-golddeep">Reminder</span>
+          </div>
+          <div class="mt-1 flex items-center gap-2 text-xs text-inksoft flex-wrap">
+            <span class="tabular">${escapeHtml(t.scheduled_date)}${t.deadline ? " · " + fmtTimeOfDay(t.deadline) : ""}</span>
+            <span class="font-medium ${toneClass}">${st.label}</span>
+            <span class="text-inksoft/70">${fmtOffsetsShort(t.remind_offsets)}</span>
+          </div>
+        </div>
+      </div>`;
+  }
+
   function taskRowHtml(t) {
+    if (isReminder(t)) return reminderRowHtml(t);
     const p = profileById[t.profile];
     const status = deadlineStatus(t);
     const toneClass = { overdue: "text-danger", soon: "text-golddeep", normal: "text-inksoft", done: "text-inksoft/60" }[status?.tone] || "text-inksoft";
@@ -1508,6 +2002,7 @@
     renderDateStrip();
     renderDial();
     renderTaskList();
+    renderUpcomingReminders();
     if (state.view === "diet") renderDietAll();
     if (state.view === "focus") { renderFocusTaskPicker(); renderFocusStats(); }
   }
@@ -1676,6 +2171,10 @@
   function onToggleTask(id) {
     const t = state.tasks.find((x) => x.id === id);
     if (!t) return;
+    if (isReminder(t)) {
+      updateTaskLocal(id, t.completed ? { completed: false, completed_on: null } : { completed: true, completed_on: todayStr() });
+      return;
+    }
     if (t.completed) {
       // revert to incomplete
       updateTaskLocal(id, { completed: false, actual_minutes: null, completed_on: null });
@@ -1761,41 +2260,107 @@
   }
 
   /* ------------------------------------------------------------------ */
-  /* Reminder: a day before                                              */
+  /* Alerts: reminders (N days before) + tasks due tomorrow              */
   /* ------------------------------------------------------------------ */
-  function reminderCandidates() {
-    const tmrw = toDateStr(addDays(new Date(), 1));
-    return state.tasks.filter((t) => !t.completed && (
-      (t.deadline && toDateStr(new Date(t.deadline)) === tmrw) ||
-      (!t.deadline && t.scheduled_date === tmrw)
-    ));
+  const ALERTS_SEEN_KEY = "ledger:alertsSeen";
+  // reminder alerts are shown once per day, so re-opening the app doesn't nag again
+  function readSeenAlerts() {
+    try {
+      const v = JSON.parse(localStorage.getItem(ALERTS_SEEN_KEY) || "{}");
+      if (v.date === todayStr()) return new Set(v.keys || []);
+    } catch {}
+    return new Set();
+  }
+  function markAlertsSeen(keys) {
+    const seen = readSeenAlerts();
+    keys.forEach((k) => seen.add(k));
+    try { localStorage.setItem(ALERTS_SEEN_KEY, JSON.stringify({ date: todayStr(), keys: [...seen] })); } catch {}
   }
 
-  function renderReminderList() {
-    const list = reminderCandidates();
-    $("reminderList").innerHTML = list.map((t) => `
+  function alertCandidates() {
+    const tmrw = toDateStr(addDays(new Date(), 1));
+    const out = [];
+    for (const t of state.tasks) {
+      if (t.completed) continue;
+      if (isReminder(t)) {
+        const n = daysUntil(t.scheduled_date);
+        if (n >= 0 && normalizeOffsets(t.remind_offsets).includes(n)) out.push({ t, days: n, key: `${t.id}:${n}`, reminder: true });
+      } else if ((t.deadline && toDateStr(new Date(t.deadline)) === tmrw) || (!t.deadline && t.scheduled_date === tmrw)) {
+        out.push({ t, days: 1, key: `${t.id}:task`, reminder: false });
+      }
+    }
+    return out.sort((a, b) => a.days - b.days);
+  }
+
+  const fmtTimeOfDay = (iso) => new Date(iso).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+
+  function renderReminderList(list) {
+    $("reminderList").innerHTML = list.map(({ t, days, reminder }) => `
       <div class="flex items-center justify-between gap-2 border border-line rounded-lg px-3 py-2.5">
         <div class="min-w-0">
-          <div class="text-sm font-medium truncate">${escapeHtml(t.title)}</div>
-          <div class="text-xs text-inksoft tabular">${t.deadline ? new Date(t.deadline).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : "Tomorrow"} · ${profileById[t.profile].label}</div>
+          <div class="flex items-center gap-2">
+            <span class="text-sm font-medium truncate">${escapeHtml(t.title)}</span>
+            ${reminder ? `<span class="shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-medium bg-gold/20 text-golddeep">Reminder</span>` : ""}
+          </div>
+          <div class="text-xs text-inksoft tabular">${reminder ? whenLabel(days) : "Due tomorrow"}${t.deadline ? " · " + fmtTimeOfDay(t.deadline) : ""} · ${profileById[t.profile].label}</div>
         </div>
       </div>`).join("");
   }
 
   function checkTomorrowReminders() {
-    const list = reminderCandidates();
+    const seen = readSeenAlerts();
+    const list = alertCandidates().filter((a) => !(a.reminder && seen.has(a.key)));
     if (list.length === 0) return;
-    renderReminderList();
+    renderReminderList(list);
     openModal("reminderModal");
+    markAlertsSeen(list.filter((a) => a.reminder).map((a) => a.key));
     if (state.notificationsEnabled && "Notification" in window && Notification.permission === "granted") {
-      list.forEach((t) => {
+      list.forEach(({ t, days, reminder }) => {
         try {
-          new Notification("Due tomorrow: " + t.title, {
-            body: t.deadline ? ("At " + new Date(t.deadline).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })) : undefined,
+          new Notification(reminder ? `${t.title} — ${whenLabel(days).toLowerCase()}` : "Due tomorrow: " + t.title, {
+            body: t.deadline ? ("At " + fmtTimeOfDay(t.deadline)) : undefined,
           });
         } catch (err) { console.error(err); }
       });
     }
+  }
+
+  // The card above the task list: reminders whose alert window has opened
+  // (e.g. a test in 5 days, set to remind 1 week before, shows up here).
+  function renderUpcomingReminders() {
+    const wrap = $("upcomingReminders");
+    const list = state.tasks.filter((t) => {
+      if (!isReminder(t) || t.completed) return false;
+      if (state.activeProfile !== "all" && t.profile !== state.activeProfile) return false;
+      const n = daysUntil(t.scheduled_date);
+      const offs = normalizeOffsets(t.remind_offsets);
+      return n >= 0 && offs.length > 0 && n <= offs[0];
+    }).sort((a, b) => a.scheduled_date.localeCompare(b.scheduled_date) || (a.deadline || "").localeCompare(b.deadline || ""));
+
+    if (list.length === 0) { wrap.classList.add("hidden"); wrap.innerHTML = ""; return; }
+    const shown = list.slice(0, 5);
+    wrap.innerHTML = `
+      <div class="px-4 pt-3 pb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide font-medium text-golddeep">
+        ${BELL_SVG(13)} Upcoming reminders
+      </div>
+      <div class="ruled border-t border-line">
+        ${shown.map((t) => {
+          const n = daysUntil(t.scheduled_date);
+          return `
+          <div class="flex items-center justify-between gap-3 px-4 py-2.5 cursor-pointer hover:bg-black/[0.02]" data-upcoming-edit="${t.id}">
+            <div class="min-w-0">
+              <div class="text-sm font-medium truncate">${escapeHtml(t.title)}</div>
+              <div class="text-xs text-inksoft tabular">${parseDateStr(t.scheduled_date).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}${t.deadline ? " · " + fmtTimeOfDay(t.deadline) : ""}</div>
+            </div>
+            <span class="shrink-0 text-xs font-semibold ${n <= 1 ? "text-golddeep" : "text-inksoft"}">${n === 0 ? "Today" : n === 1 ? "Tomorrow" : `in ${n} days`}</span>
+          </div>`;
+        }).join("")}
+        ${list.length > shown.length ? `<div class="px-4 py-2 text-xs text-inksoft">+${list.length - shown.length} more — see the day or week list</div>` : ""}
+      </div>`;
+    wrap.classList.remove("hidden");
+    wrap.querySelectorAll("[data-upcoming-edit]").forEach((el) => {
+      el.addEventListener("click", () => openTaskModal(el.getAttribute("data-upcoming-edit")));
+    });
   }
 
   /* ------------------------------------------------------------------ */
@@ -1828,24 +2393,94 @@
     if ($("fDeadline").value && state.fDaily) setDailyToggle(false);
   });
 
+  /* ---- Task / Reminder switch and the "remind me" chips ---- */
+  function renderKindChips() {
+    const opts = [{ id: "task", label: "Task" }, { id: "reminder", label: "Reminder" }];
+    $("fKindChips").innerHTML = opts.map((o) => `
+      <button type="button" data-fkind="${o.id}" class="flex-1 py-1.5 rounded-full text-xs font-medium transition ${state.fKind === o.id ? "bg-ink text-paper" : "text-inksoft hover:text-ink"}">${o.label}</button>`).join("");
+    $("fKindChips").querySelectorAll("[data-fkind]").forEach((b) => {
+      b.addEventListener("click", () => setKind(b.getAttribute("data-fkind")));
+    });
+  }
+
+  function setKind(kind) {
+    state.fKind = kind;
+    const rem = kind === "reminder";
+    renderKindChips();
+    $("fDurationWrap").classList.toggle("hidden", rem);
+    $("fDailyWrap").classList.toggle("hidden", rem);
+    $("fRemindWrap").classList.toggle("hidden", !rem);
+    $("fDateLabel").textContent = rem ? "Event date" : "Scheduled date";
+    $("fDeadlineLabelText").textContent = rem ? "Time" : "Deadline";
+    $("fTitle").placeholder = rem ? "e.g. Economics test" : "e.g. Draft chapter outline";
+    $("saveTaskBtn").textContent = rem ? "Save reminder" : "Save task";
+    $("taskModalTitle").textContent = (state.editingTaskId ? "Edit " : "New ") + (rem ? "reminder" : "task");
+    if (rem) renderRemindChips();
+  }
+
+  function renderRemindChips() {
+    const offs = normalizeOffsets(state.fOffsets);
+    const all = normalizeOffsets([...REMIND_PRESETS, ...offs]).sort((a, b) => a - b);
+    $("fRemindChips").innerHTML = all.map((n) => {
+      const on = offs.includes(n);
+      return `<button type="button" data-foff="${n}" class="text-xs font-medium px-3 py-1.5 rounded-full border transition ${on ? "bg-gold border-gold text-ink" : "border-line bg-white text-inksoft hover:border-ink"}">${offsetLabel(n)}</button>`;
+    }).join("");
+    $("fRemindChips").querySelectorAll("[data-foff]").forEach((b) => {
+      b.addEventListener("click", () => {
+        const n = Number(b.getAttribute("data-foff"));
+        state.fOffsets = normalizeOffsets(offs.includes(n) ? offs.filter((x) => x !== n) : [...offs, n]);
+        renderRemindChips();
+      });
+    });
+
+    const date = $("fScheduledDate").value;
+    let hint = "No alerts selected — it will only appear on its own date.";
+    if (offs.length && date) {
+      const base = parseDateStr(date), now = startOfToday();
+      hint = "You'll be alerted on " + offs.map((n) => {
+        const d = addDays(base, -n);
+        return d.toLocaleDateString(undefined, { day: "numeric", month: "short" }) + (d < now ? " (already passed)" : "");
+      }).join(", ") + ".";
+    }
+    $("fRemindHint").textContent = hint;
+  }
+
+  $("fRemindCustomAdd").addEventListener("click", () => {
+    const raw = $("fRemindCustom").value.trim();
+    const n = Number(raw);
+    if (!raw || !Number.isInteger(n) || n < 0 || n > 365) { toast("Enter a whole number of days (0–365)."); return; }
+    state.fOffsets = normalizeOffsets([...normalizeOffsets(state.fOffsets), n]);
+    $("fRemindCustom").value = "";
+    renderRemindChips();
+  });
+  $("fRemindCustom").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); $("fRemindCustomAdd").click(); }
+  });
+  $("fScheduledDate").addEventListener("change", () => { if (state.fKind === "reminder") renderRemindChips(); });
+
   function openTaskModal(taskId, prefill) {
     state.editingTaskId = taskId || null;
     const t = taskId ? state.tasks.find((x) => x.id === taskId) : null;
-    const p = !t && prefill ? prefill : null;
+    const p = !t && prefill ? prefill : {};
+    const pick = (k, d) => (p[k] != null ? p[k] : d);
 
-    $("taskModalTitle").textContent = t ? "Edit task" : "New task";
     $("deleteTaskBtn").classList.toggle("hidden", !t);
     $("fEstWarning").classList.add("hidden");
 
-    $("fTitle").value = t ? t.title : (p ? p.title : "");
-    renderProfileChips(t ? t.profile : (p ? p.profile : (state.activeProfile !== "all" ? state.activeProfile : "student")));
-    $("fScheduledDate").value = t ? t.scheduled_date : (p ? p.scheduled_date : state.selectedDate);
-    $("fDeadline").value = t && t.deadline ? toLocalInputValue(t.deadline) : (p && p.deadline ? toLocalInputValue(p.deadline) : "");
-    $("fEstHours").value = t ? Math.floor(t.estimated_minutes / 60) : (p ? Math.floor(p.estimated_minutes / 60) : 1);
-    $("fEstMinutes").value = t ? t.estimated_minutes % 60 : (p ? p.estimated_minutes % 60 : 0);
+    $("fTitle").value = t ? t.title : pick("title", "");
+    renderProfileChips(t ? t.profile : pick("profile", state.activeProfile !== "all" ? state.activeProfile : "student"));
+    $("fScheduledDate").value = t ? t.scheduled_date : pick("scheduled_date", state.selectedDate);
+    const dl = t ? t.deadline : pick("deadline", null);
+    $("fDeadline").value = dl ? toLocalInputValue(dl) : "";
+    // a reminder stores a placeholder 1 minute, so show a sensible default if it's switched to a task
+    const mins = t ? (isReminder(t) ? 60 : t.estimated_minutes) : pick("estimated_minutes", 60);
+    $("fEstHours").value = Math.floor(mins / 60);
+    $("fEstMinutes").value = mins % 60;
     setDailyToggle(t ? !!t.is_daily : false);
+    state.fOffsets = normalizeOffsets(t ? t.remind_offsets : pick("remind_offsets", [1]));
+    setKind(t ? (isReminder(t) ? "reminder" : "task") : pick("kind", "task"));
 
-    if (p && p.dateWasGuessed) {
+    if (p.dateWasGuessed) {
       $("fEstWarning").textContent = "Couldn't spot a date in that — defaulted to today. Check it before saving.";
       $("fEstWarning").classList.remove("hidden");
     }
@@ -1865,34 +2500,52 @@
     const title = $("fTitle").value.trim();
     if (!title) return;
     const selectedProfile = state.fSelectedProfile || PROFILES[0].id;
-
-    const estHours = Number($("fEstHours").value) || 0;
-    const estMinutes = Number($("fEstMinutes").value) || 0;
-    const estimated_minutes = estHours * 60 + estMinutes;
-    if (estimated_minutes <= 0) { toast("Add an estimated duration first."); return; }
+    const kind = state.fKind === "reminder" ? "reminder" : "task";
 
     const scheduled_date = $("fScheduledDate").value;
     const deadlineRaw = $("fDeadline").value;
     const deadline = deadlineRaw ? new Date(deadlineRaw).toISOString() : null;
-    const is_daily = !!state.fDaily && !deadline; // daily rollover only applies to no-deadline tasks
 
-    // warn (not block) if this pushes the day over budget
-    const existingMinsOnDay = tasksForDate(scheduled_date)
-      .filter((t) => t.id !== state.editingTaskId)
-      .reduce((sum, t) => sum + minutesForTask(t), 0);
-    const projected = existingMinsOnDay + estimated_minutes;
-    if (projected > DAY_MINUTES) {
-      $("fEstWarning").textContent = `Heads up: this puts ${scheduled_date} at ${fmtHM(projected)} of its 16h budget.`;
-      $("fEstWarning").classList.remove("hidden");
+    // Reminders take no time from the day's budget. The database column needs a value > 0,
+    // so they store 1 as a placeholder and the app ignores it for reminders.
+    let estimated_minutes = 1;
+    let is_daily = false;
+    if (kind === "task") {
+      const estHours = Number($("fEstHours").value) || 0;
+      const estMinutes = Number($("fEstMinutes").value) || 0;
+      estimated_minutes = estHours * 60 + estMinutes;
+      if (estimated_minutes <= 0) { toast("Add an estimated duration first."); return; }
+      is_daily = !!state.fDaily && !deadline; // daily rollover only applies to no-deadline tasks
+
+      // warn (not block) if this pushes the day over budget
+      const existingMinsOnDay = tasksForDate(scheduled_date)
+        .filter((t) => t.id !== state.editingTaskId)
+        .reduce((sum, t) => sum + minutesForTask(t), 0);
+      const projected = existingMinsOnDay + estimated_minutes;
+      if (projected > DAY_MINUTES) {
+        $("fEstWarning").textContent = `Heads up: this puts ${scheduled_date} at ${fmtHM(projected)} of its 16h budget.`;
+        $("fEstWarning").classList.remove("hidden");
+      }
     }
 
     const payload = { title, profile: selectedProfile, scheduled_date, deadline, estimated_minutes, is_daily };
+    const existing = state.editingTaskId ? state.tasks.find((t) => t.id === state.editingTaskId) : null;
+    // only send the reminder columns when they matter, so tasks keep saving on a database
+    // that hasn't had the reminder SQL step run yet
+    if (kind === "reminder") {
+      payload.kind = "reminder";
+      payload.remind_offsets = normalizeOffsets(state.fOffsets);
+    } else if (existing && isReminder(existing)) {
+      payload.kind = "task";
+      payload.remind_offsets = [];
+    }
 
     if (state.editingTaskId) {
       await updateTaskLocal(state.editingTaskId, payload);
     } else {
       const created = await db().add({ ...payload, completed: false, actual_minutes: null, rollover_reviewed: false });
-      if (created) state.tasks.push(created);
+      if (!created) return; // save failed (a message was shown) — keep the form open so nothing is lost
+      state.tasks.push(created);
     }
     closeModal("taskModal");
     renderAll();
@@ -1924,6 +2577,227 @@
     await updateTaskLocal(id, { completed: true, actual_minutes, completed_on: todayStr() });
     closeModal("completeModal");
     toast("Task completed — budget updated.");
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* Import a schedule from a PDF                                        */
+  /* ------------------------------------------------------------------ */
+  // pdf.js is only downloaded the first time you import a PDF (needs internet then).
+  const PDFJS_SOURCES = [
+    { lib: "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js", worker: "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js" },
+    { lib: "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js", worker: "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js" },
+  ];
+  function loadScriptOnce(src) {
+    return new Promise((resolve, reject) => {
+      const el = document.createElement("script");
+      el.src = src;
+      el.onload = resolve;
+      el.onerror = () => { el.remove(); reject(new Error("load failed: " + src)); };
+      document.head.appendChild(el);
+    });
+  }
+  async function loadPdfJs() {
+    if (window.pdfjsLib) {
+      if (!window.pdfjsLib.GlobalWorkerOptions.workerSrc) window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_SOURCES[0].worker;
+      return window.pdfjsLib;
+    }
+    for (const src of PDFJS_SOURCES) {
+      try {
+        await loadScriptOnce(src.lib);
+        if (window.pdfjsLib) {
+          window.pdfjsLib.GlobalWorkerOptions.workerSrc = src.worker;
+          return window.pdfjsLib;
+        }
+      } catch (err) { console.error(err); }
+    }
+    throw new Error("pdfjs-unavailable");
+  }
+
+  async function readPdfLines(file) {
+    const pdfjs = await loadPdfJs();
+    const data = new Uint8Array(await file.arrayBuffer());
+    const doc = await pdfjs.getDocument({ data }).promise;
+    const lines = [];
+    const maxPages = Math.min(doc.numPages, 40);
+    for (let n = 1; n <= maxPages; n++) {
+      const page = await doc.getPage(n);
+      const content = await page.getTextContent();
+      lines.push(...pdfItemsToLines(content.items), "");
+    }
+    return { lines, pages: doc.numPages, truncated: doc.numPages > maxPages };
+  }
+
+  state.importRows = [];
+
+  function updateImportCount() {
+    const n = state.importRows.filter((r) => r.include).length;
+    $("importConfirmBtn").textContent = n === 1 ? "Add 1 item" : `Add ${n} items`;
+    $("importConfirmBtn").disabled = n === 0;
+    const rem = state.importRows.filter((r) => r.include && r.kind === "reminder").length;
+    $("importCount").textContent = `${n} of ${state.importRows.length} selected` + (rem ? ` · ${rem} reminder${rem === 1 ? "" : "s"}` : "");
+  }
+
+  function importRowHtml(r, i) {
+    const profOpts = PROFILES.map((p) => `<option value="${p.id}" ${r.profile === p.id ? "selected" : ""}>${p.label}</option>`).join("");
+    const offKey = normalizeOffsets(r.offsets).join(",");
+    const offOpts = OFFSET_COMBOS.map((o) => `<option value="${o.v}" ${o.v === offKey ? "selected" : ""}>${o.label}</option>`).join("");
+    const field = "rounded-lg border border-line bg-white px-2 py-1.5 text-xs focus:border-gold";
+    const notes = [
+      r.dup ? `<span class="text-golddeep font-medium">Already in your list</span>` : "",
+      r.dateGuessed ? `<span class="text-danger font-medium">Date guessed — check it</span>` : "",
+    ].filter(Boolean).join(" · ");
+    return `
+      <div data-imp="${i}" class="rounded-xl border border-line bg-white p-3 ${r.include ? "" : "opacity-60"}">
+        <div class="flex items-start gap-2.5">
+          <input type="checkbox" data-imp-inc ${r.include ? "checked" : ""} class="mt-2 w-4 h-4 accent-[#16211C] shrink-0" aria-label="Include" />
+          <div class="flex-1 min-w-0 space-y-2">
+            <input type="text" data-imp-title maxlength="120" value="${escapeHtml(r.title)}" class="w-full ${field} text-sm py-2" />
+            <div class="flex flex-wrap items-center gap-1.5">
+              <input type="date" data-imp-date value="${escapeHtml(r.date)}" class="${field}" />
+              <input type="time" data-imp-time value="${escapeHtml(r.time)}" class="${field}" title="${r.kind === "reminder" ? "Event time" : "Due by"}" />
+              <select data-imp-kind class="${field}">
+                <option value="task" ${r.kind === "task" ? "selected" : ""}>Task</option>
+                <option value="reminder" ${r.kind === "reminder" ? "selected" : ""}>Reminder</option>
+              </select>
+              <select data-imp-profile class="${field}">${profOpts}</select>
+              ${r.kind === "task"
+                ? `<span class="inline-flex items-center gap-1"><input type="number" data-imp-min min="5" max="960" step="5" value="${r.minutes}" class="w-16 ${field}" /><span class="text-xs text-inksoft">min</span></span>`
+                : `<select data-imp-offs class="${field}" title="When to alert you">${offOpts}</select>`}
+            </div>
+            <div class="text-[10px] text-inksoft/70 leading-snug break-words">from “${escapeHtml(r.src)}”${notes ? " · " + notes : ""}</div>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function renderImportList() {
+    const list = $("importList");
+    const top = list.scrollTop;
+    list.innerHTML = state.importRows.map(importRowHtml).join("");
+    list.scrollTop = top;
+    updateImportCount();
+  }
+
+  function onImportEdit(e) {
+    const card = e.target.closest("[data-imp]");
+    if (!card) return;
+    const r = state.importRows[Number(card.getAttribute("data-imp"))];
+    if (!r) return;
+    const el = e.target;
+    if (el.hasAttribute("data-imp-inc")) { r.include = el.checked; card.classList.toggle("opacity-60", !r.include); updateImportCount(); }
+    else if (el.hasAttribute("data-imp-title")) r.title = el.value;
+    else if (el.hasAttribute("data-imp-date")) r.date = el.value;
+    else if (el.hasAttribute("data-imp-time")) r.time = el.value;
+    else if (el.hasAttribute("data-imp-profile")) r.profile = el.value;
+    else if (el.hasAttribute("data-imp-min")) r.minutes = Number(el.value) || 0;
+    else if (el.hasAttribute("data-imp-offs")) r.offsets = el.value.split(",").map(Number);
+    else if (el.hasAttribute("data-imp-kind") && e.type === "change") { r.kind = el.value; renderImportList(); }
+  }
+  $("importList").addEventListener("input", onImportEdit);
+  $("importList").addEventListener("change", onImportEdit);
+
+  $("importAllBtn").addEventListener("click", () => { state.importRows.forEach((r) => { r.include = true; }); renderImportList(); });
+  $("importNoneBtn").addEventListener("click", () => { state.importRows.forEach((r) => { r.include = false; }); renderImportList(); });
+
+  function setImportStatus(msg, { toolbar = false, debugLines = null } = {}) {
+    $("importStatus").textContent = msg;
+    $("importToolbar").classList.toggle("hidden", !toolbar);
+    $("importDebug").innerHTML = debugLines
+      ? `<details class="mt-2 text-xs text-inksoft"><summary class="cursor-pointer underline decoration-line">Show the text I read</summary>
+           <pre class="mt-2 whitespace-pre-wrap break-words bg-white border border-line rounded-lg p-2 max-h-48 overflow-y-auto">${escapeHtml(debugLines.slice(0, 80).join("\n"))}</pre></details>`
+      : "";
+  }
+
+  async function startImport(file) {
+    state.importRows = [];
+    $("importList").innerHTML = "";
+    setImportStatus(`Reading ${file.name}…`);
+    updateImportCount();
+    $("importConfirmBtn").disabled = true;
+    openModal("importModal");
+
+    try {
+      const { lines, pages, truncated } = await readPdfLines(file);
+      const chars = lines.join("").replace(/[\s|]/g, "").length;
+      if (chars < 10) {
+        setImportStatus("I couldn't find any selectable text in this PDF — it's probably a scan or a photo of a page. Save or export it as a text-based PDF and try again, or add the tasks by hand.");
+        return;
+      }
+      const { items, undated } = parseScheduleLines(lines);
+      if (items.length === 0) {
+        setImportStatus("I read the PDF but couldn't spot any dated items. Each entry needs a date (e.g. “12 Nov — Maths test”), or a time under a dated heading (e.g. “09:00–10:30 Maths”).", { debugLines: lines.filter(Boolean) });
+        return;
+      }
+      state.importRows = items.map((r) => {
+        const dup = state.tasks.some((t) => (t.title || "").trim().toLowerCase() === r.title.toLowerCase() && t.scheduled_date === r.date);
+        return { ...r, dup, include: !dup };
+      });
+      renderImportList();
+      const extra = [
+        undated ? ` ${undated} line${undated === 1 ? "" : "s"} with a time but no date ${undated === 1 ? "was" : "were"} skipped.` : "",
+        truncated ? ` Only the first ${pages > 40 ? 40 : pages} pages were read.` : "",
+      ].join("");
+      setImportStatus(`Found ${items.length} item${items.length === 1 ? "" : "s"} in “${file.name}”. Check them over, untick anything you don't want, then add.${extra}`, { toolbar: true });
+    } catch (err) {
+      console.error(err);
+      if (err && err.name === "PasswordException") setImportStatus("This PDF is password-protected. Remove the password and try again.");
+      else if (err && err.message === "pdfjs-unavailable") setImportStatus("Couldn't load the PDF reader. It needs an internet connection the first time — check your connection and try again.");
+      else setImportStatus("Couldn't read that PDF. It may be damaged — try exporting it again.");
+    }
+  }
+
+  $("importPdfBtn").addEventListener("click", () => $("pdfInput").click());
+  $("addReminderBtn").addEventListener("click", () => openTaskModal(null, { kind: "reminder" }));
+  $("pdfInput").addEventListener("change", () => {
+    const file = $("pdfInput").files[0];
+    $("pdfInput").value = ""; // so choosing the same file again still triggers
+    if (!file) return;
+    if (file.type !== "application/pdf" && !/\.pdf$/i.test(file.name)) { toast("Please choose a PDF file."); return; }
+    startImport(file);
+  });
+
+  $("importConfirmBtn").addEventListener("click", async () => {
+    const chosen = state.importRows.filter((r) => r.include);
+    if (!chosen.length) return;
+    const bad = chosen.filter((r) => !r.title.trim() || !/^\d{4}-\d{2}-\d{2}$/.test(r.date) || (r.kind === "task" && !(r.minutes > 0)));
+    if (bad.length) { toast(`${bad.length} selected item${bad.length === 1 ? " is" : "s are"} missing a title, date or duration.`); return; }
+
+    // every row in one insert must have the same columns
+    const withReminderCols = chosen.some((r) => r.kind === "reminder");
+    const rows = chosen.map((r) => {
+      const row = {
+        title: r.title.trim().slice(0, 120),
+        profile: r.profile,
+        scheduled_date: r.date,
+        deadline: r.time ? new Date(`${r.date}T${r.time}:00`).toISOString() : null,
+        estimated_minutes: r.kind === "reminder" ? 1 : Math.round(r.minutes),
+        is_daily: false,
+        completed: false,
+        actual_minutes: null,
+        rollover_reviewed: false,
+      };
+      if (withReminderCols) {
+        row.kind = r.kind;
+        row.remind_offsets = r.kind === "reminder" ? normalizeOffsets(r.offsets) : [];
+      }
+      return row;
+    });
+
+    $("importConfirmBtn").disabled = true;
+    const created = await db().addMany(rows);
+    if (!created.length) { updateImportCount(); return; } // failed (a message was shown) — keep the preview open
+    state.tasks.push(...created);
+
+    // jump to what was just added
+    const dates = created.map((t) => t.scheduled_date).sort();
+    state.selectedDate = dates[0];
+    state.weekStart = startOfWeek(parseDateStr(dates[0]));
+    state.period = new Set(dates).size > 1 ? "week" : "day";
+
+    closeModal("importModal");
+    renderAll();
+    const rem = created.filter(isReminder).length;
+    toast(`Added ${created.length} item${created.length === 1 ? "" : "s"}${rem ? ` (${rem} reminder${rem === 1 ? "" : "s"})` : ""}.`);
   });
 
   /* ------------------------------------------------------------------ */
@@ -2279,7 +3153,7 @@
     let work = e.workSec, rest = e.restSec;
     const ratio = manualRatio();
     for (const t of state.tasks) {
-      if (!t.completed || (t.completed_on || t.scheduled_date) !== dateStr) continue;
+      if (isReminder(t) || !t.completed || (t.completed_on || t.scheduled_date) !== dateStr) continue;
       const total = (t.actual_minutes != null ? t.actual_minutes : t.estimated_minutes) * 60;
       const untimed = Math.max(0, total - taskUsedSec(t)); // timed part is already in the log
       work += untimed * ratio;
@@ -2587,7 +3461,7 @@
     const q = query.trim().toLowerCase();
     const today = todayStr();
     return state.tasks
-      .filter((t) => !t.completed && (!q || (t.title || "").toLowerCase().includes(q)))
+      .filter((t) => !isReminder(t) && !t.completed && (!q || (t.title || "").toLowerCase().includes(q)))
       .sort((a, b) =>
         (a.scheduled_date === today ? 0 : 1) - (b.scheduled_date === today ? 0 : 1) ||
         a.scheduled_date.localeCompare(b.scheduled_date) ||
